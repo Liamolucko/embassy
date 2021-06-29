@@ -10,6 +10,9 @@ use embedded_hal::digital::v2::{InputPin, OutputPin, StatefulOutputPin};
 use gpio::pin_cnf::DRIVE_A;
 
 use crate::pac;
+#[cfg(feature = "nrf51")]
+use crate::pac::gpio;
+#[cfg(not(feature = "nrf51"))]
 use crate::pac::p0 as gpio;
 
 use self::sealed::Pin as _;
@@ -299,6 +302,9 @@ pub(crate) mod sealed {
         fn block(&self) -> &gpio::RegisterBlock {
             unsafe {
                 match self.pin_port() / 32 {
+                    #[cfg(feature = "nrf51")]
+                    0 => &*pac::GPIO::ptr(),
+                    #[cfg(not(feature = "nrf51"))]
                     0 => &*pac::P0::ptr(),
                     #[cfg(any(feature = "nrf52833", feature = "nrf52840"))]
                     1 => &*pac::P1::ptr(),

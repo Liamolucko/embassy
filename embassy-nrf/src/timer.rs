@@ -238,7 +238,7 @@ pub struct Cc<'a, T: Instance> {
 impl<'a, T: Instance> Cc<'a, T> {
     /// Get the current value stored in the register.
     pub fn read(&self) -> u32 {
-        T::regs().cc[self.n].read().cc().bits()
+        T::regs().cc[self.n].read().bits()
     }
 
     /// Set the value stored in the register.
@@ -246,7 +246,7 @@ impl<'a, T: Instance> Cc<'a, T> {
     /// `event_compare` will fire when the timer's counter reaches this value.
     pub fn write(&self, value: u32) {
         // SAFETY: there are no invalid values for the CC register.
-        T::regs().cc[self.n].write(|w| unsafe { w.cc().bits(value) })
+        T::regs().cc[self.n].write(|w| unsafe { w.bits(value) })
     }
 
     /// Capture the current value of the timer's counter in this register, and return it.

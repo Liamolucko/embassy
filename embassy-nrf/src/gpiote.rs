@@ -1,16 +1,14 @@
 use core::convert::Infallible;
-use core::future::Future;
-use core::marker::PhantomData;
-use core::task::{Context, Poll};
+use core::task::Poll;
 use embassy::interrupt::{Interrupt, InterruptExt};
-use embassy::traits::gpio::{WaitForAnyEdge, WaitForHigh, WaitForLow};
 use embassy::util::AtomicWaker;
 use embassy_extras::unsafe_impl_unborrow;
 use embedded_hal::digital::v2::{InputPin, StatefulOutputPin};
 use futures::future::poll_fn;
 
-use crate::gpio::sealed::Pin as _;
-use crate::gpio::{AnyPin, Input, Output, Pin as GpioPin, Port};
+#[cfg(any(feature = "nrf52833", feature = "nrf52840"))]
+use crate::gpio::Port;
+use crate::gpio::{Input, Output, Pin as GpioPin};
 use crate::pac;
 use crate::ppi::{Event, Task};
 use crate::{interrupt, peripherals};
@@ -24,6 +22,7 @@ pub const PIN_COUNT: usize = 32;
 
 const NEW_AW: AtomicWaker = AtomicWaker::new();
 static CHANNEL_WAKERS: [AtomicWaker; CHANNEL_COUNT] = [NEW_AW; CHANNEL_COUNT];
+#[cfg(not(feature = "nrf51"))]
 static PORT_WAKERS: [AtomicWaker; PIN_COUNT] = [NEW_AW; PIN_COUNT];
 
 pub enum InputChannelPolarity {
@@ -43,9 +42,10 @@ pub enum OutputChannelPolarity {
 pub(crate) fn init(irq_prio: crate::interrupt::Priority) {
     #[cfg(any(feature = "nrf52833", feature = "nrf52840"))]
     let ports = unsafe { &[&*pac::P0::ptr(), &*pac::P1::ptr()] };
-    #[cfg(not(any(feature = "nrf52833", feature = "nrf52840")))]
+    #[cfg(not(any(feature = "nrf52833", feature = "nrf52840", feature = "nrf51")))]
     let ports = unsafe { &[&*pac::P0::ptr()] };
 
+    #[cfg(not(feature = "nrf51"))]
     for &p in ports {
         // Enable latched detection
         p.detectmode.write(|w| w.detectmode().ldetect());
@@ -76,6 +76,7 @@ unsafe fn GPIOTE() {
         }
     }
 
+    #[cfg(not(feature = "nrf51"))]
     if g.events_port.read().bits() != 0 {
         g.events_port.write(|w| w);
 
@@ -239,14 +240,14 @@ impl<'d, C: Channel, T: GpioPin> OutputChannel<'d, C, T> {
     }
 
     /// Triggers `task set` (set associated pin high).
-    #[cfg(not(feature = "51"))]
+    #[cfg(not(feature = "nrf51"))]
     pub fn set(&self) {
         let g = unsafe { &*pac::GPIOTE::ptr() };
         g.tasks_set[self.ch.number()].write(|w| unsafe { w.bits(1) });
     }
 
     /// Triggers `task clear` (set associated pin low).
-    #[cfg(not(feature = "51"))]
+    #[cfg(not(feature = "nrf51"))]
     pub fn clear(&self) {
         let g = unsafe { &*pac::GPIOTE::ptr() };
         g.tasks_clr[self.ch.number()].write(|w| unsafe { w.bits(1) });
@@ -259,112 +260,133 @@ impl<'d, C: Channel, T: GpioPin> OutputChannel<'d, C, T> {
     }
 
     /// Returns the CLR task, for use with PPI.
-    #[cfg(not(feature = "51"))]
+    #[cfg(not(feature = "nrf51"))]
     pub fn task_clr(&self) -> Task {
         let g = unsafe { &*pac::GPIOTE::ptr() };
         Task::from_reg(&g.tasks_clr[self.ch.number()])
     }
 
     /// Returns the SET task, for use with PPI.
-    #[cfg(not(feature = "51"))]
+    #[cfg(not(feature = "nrf51"))]
     pub fn task_set(&self) -> Task {
         let g = unsafe { &*pac::GPIOTE::ptr() };
         Task::from_reg(&g.tasks_set[self.ch.number()])
     }
 }
 
-/// GPIOTE port input driver
-pub struct PortInput<'d, T: GpioPin> {
-    pin: Input<'d, T>,
-}
+// The nrf51 has no LATCH register, so there's no way to tell which pin triggered the port event.
+// So, it can't be used for this purpose.
+#[cfg(not(feature = "nrf51"))]
+mod port_channel {
+    use core::convert::Infallible;
+    use core::future::Future;
+    use core::marker::PhantomData;
+    use core::task::{Context, Poll};
 
-impl<'d, T: GpioPin> Unpin for PortInput<'d, T> {}
+    use embassy::traits::gpio::{WaitForAnyEdge, WaitForHigh, WaitForLow};
+    use embedded_hal::digital::v2::InputPin;
 
-impl<'d, T: GpioPin> PortInput<'d, T> {
-    pub fn new(pin: Input<'d, T>) -> Self {
-        Self { pin }
+    use crate::gpio::sealed::Pin as _;
+    use crate::gpio::{AnyPin, Input, Pin as GpioPin};
+
+    use super::PORT_WAKERS;
+
+    /// GPIOTE port input driver
+    pub struct PortInput<'d, T: GpioPin> {
+        pin: Input<'d, T>,
     }
-}
 
-impl<'d, T: GpioPin> InputPin for PortInput<'d, T> {
-    type Error = Infallible;
+    impl<'d, T: GpioPin> Unpin for PortInput<'d, T> {}
 
-    fn is_high(&self) -> Result<bool, Self::Error> {
-        self.pin.is_high()
-    }
-
-    fn is_low(&self) -> Result<bool, Self::Error> {
-        self.pin.is_low()
-    }
-}
-
-impl<'d, T: GpioPin> WaitForHigh for PortInput<'d, T> {
-    type Future<'a> = PortInputFuture<'a>;
-
-    fn wait_for_high<'a>(&'a mut self) -> Self::Future<'a> {
-        self.pin.pin.conf().modify(|_, w| w.sense().high());
-
-        PortInputFuture {
-            pin_port: self.pin.pin.pin_port(),
-            phantom: PhantomData,
+    impl<'d, T: GpioPin> PortInput<'d, T> {
+        pub fn new(pin: Input<'d, T>) -> Self {
+            Self { pin }
         }
     }
-}
 
-impl<'d, T: GpioPin> WaitForLow for PortInput<'d, T> {
-    type Future<'a> = PortInputFuture<'a>;
+    impl<'d, T: GpioPin> InputPin for PortInput<'d, T> {
+        type Error = Infallible;
 
-    fn wait_for_low<'a>(&'a mut self) -> Self::Future<'a> {
-        self.pin.pin.conf().modify(|_, w| w.sense().low());
+        fn is_high(&self) -> Result<bool, Self::Error> {
+            self.pin.is_high()
+        }
 
-        PortInputFuture {
-            pin_port: self.pin.pin.pin_port(),
-            phantom: PhantomData,
+        fn is_low(&self) -> Result<bool, Self::Error> {
+            self.pin.is_low()
         }
     }
-}
 
-impl<'d, T: GpioPin> WaitForAnyEdge for PortInput<'d, T> {
-    type Future<'a> = PortInputFuture<'a>;
-    fn wait_for_any_edge<'a>(&'a mut self) -> Self::Future<'a> {
-        if self.is_high().ok().unwrap() {
-            self.pin.pin.conf().modify(|_, w| w.sense().low());
-        } else {
+    impl<'d, T: GpioPin> WaitForHigh for PortInput<'d, T> {
+        type Future<'a> = PortInputFuture<'a>;
+
+        fn wait_for_high<'a>(&'a mut self) -> Self::Future<'a> {
             self.pin.pin.conf().modify(|_, w| w.sense().high());
+
+            PortInputFuture {
+                pin_port: self.pin.pin.pin_port(),
+                phantom: PhantomData,
+            }
         }
-        PortInputFuture {
-            pin_port: self.pin.pin.pin_port(),
-            phantom: PhantomData,
+    }
+
+    impl<'d, T: GpioPin> WaitForLow for PortInput<'d, T> {
+        type Future<'a> = PortInputFuture<'a>;
+
+        fn wait_for_low<'a>(&'a mut self) -> Self::Future<'a> {
+            self.pin.pin.conf().modify(|_, w| w.sense().low());
+
+            PortInputFuture {
+                pin_port: self.pin.pin.pin_port(),
+                phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<'d, T: GpioPin> WaitForAnyEdge for PortInput<'d, T> {
+        type Future<'a> = PortInputFuture<'a>;
+        fn wait_for_any_edge<'a>(&'a mut self) -> Self::Future<'a> {
+            if self.is_high().ok().unwrap() {
+                self.pin.pin.conf().modify(|_, w| w.sense().low());
+            } else {
+                self.pin.pin.conf().modify(|_, w| w.sense().high());
+            }
+            PortInputFuture {
+                pin_port: self.pin.pin.pin_port(),
+                phantom: PhantomData,
+            }
+        }
+    }
+
+    pub struct PortInputFuture<'a> {
+        pin_port: u8,
+        phantom: PhantomData<&'a mut AnyPin>,
+    }
+
+    impl<'a> Drop for PortInputFuture<'a> {
+        fn drop(&mut self) {
+            let pin = unsafe { AnyPin::steal(self.pin_port) };
+            pin.conf().modify(|_, w| w.sense().disabled());
+        }
+    }
+
+    impl<'a> Future for PortInputFuture<'a> {
+        type Output = ();
+
+        fn poll(self: core::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            PORT_WAKERS[self.pin_port as usize].register(cx.waker());
+
+            let pin = unsafe { AnyPin::steal(self.pin_port) };
+            if pin.conf().read().sense().is_disabled() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
         }
     }
 }
 
-pub struct PortInputFuture<'a> {
-    pin_port: u8,
-    phantom: PhantomData<&'a mut AnyPin>,
-}
-
-impl<'a> Drop for PortInputFuture<'a> {
-    fn drop(&mut self) {
-        let pin = unsafe { AnyPin::steal(self.pin_port) };
-        pin.conf().modify(|_, w| w.sense().disabled());
-    }
-}
-
-impl<'a> Future for PortInputFuture<'a> {
-    type Output = ();
-
-    fn poll(self: core::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        PORT_WAKERS[self.pin_port as usize].register(cx.waker());
-
-        let pin = unsafe { AnyPin::steal(self.pin_port) };
-        if pin.conf().read().sense().is_disabled() {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
-    }
-}
+#[cfg(not(feature = "nrf51"))]
+pub use port_channel::*;
 
 mod sealed {
     pub trait Channel {}
@@ -405,7 +427,11 @@ impl_channel!(GPIOTE_CH0, 0);
 impl_channel!(GPIOTE_CH1, 1);
 impl_channel!(GPIOTE_CH2, 2);
 impl_channel!(GPIOTE_CH3, 3);
+#[cfg(not(feature = "nrf51"))]
 impl_channel!(GPIOTE_CH4, 4);
+#[cfg(not(feature = "nrf51"))]
 impl_channel!(GPIOTE_CH5, 5);
+#[cfg(not(feature = "nrf51"))]
 impl_channel!(GPIOTE_CH6, 6);
+#[cfg(not(feature = "nrf51"))]
 impl_channel!(GPIOTE_CH7, 7);

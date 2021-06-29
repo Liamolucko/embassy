@@ -25,23 +25,30 @@ compile_error!("No chip feature activated. You must activate exactly one of the 
 pub(crate) mod fmt;
 pub(crate) mod util;
 
+#[cfg(not(feature = "nrf51"))]
 pub mod buffered_uarte;
 pub mod gpio;
 pub mod gpiote;
 pub mod ppi;
-#[cfg(not(any(feature = "nrf52805", feature = "nrf52820")))]
+#[cfg(not(any(feature = "nrf52805", feature = "nrf52820", feature = "nrf51")))]
 pub mod pwm;
 #[cfg(feature = "nrf52840")]
 pub mod qspi;
 pub mod rtc;
-#[cfg(not(feature = "nrf52820"))]
+#[cfg(not(any(feature = "nrf52820", feature = "nrf51")))]
 pub mod saadc;
+#[cfg(not(feature = "nrf51"))]
 pub mod spim;
 pub mod timer;
+#[cfg(not(feature = "nrf51"))]
 pub mod twim;
+#[cfg(not(feature = "nrf51"))]
 pub mod uarte;
 
 // This mod MUST go last, so that it sees all the `impl_foo!` macros
+#[cfg(feature = "nrf51")]
+#[path = "chips/nrf51.rs"]
+mod chip;
 #[cfg(feature = "nrf52805")]
 #[path = "chips/nrf52805.rs"]
 mod chip;
@@ -86,6 +93,7 @@ pub mod config {
         Synthesized,
         ExternalXtal,
         ExternalLowSwing,
+        #[cfg(not(feature = "nrf51"))]
         ExternalFullSwing,
     }
 
@@ -137,10 +145,14 @@ pub fn init(config: config::Config) -> Peripherals {
 
         config::LfclkSource::ExternalLowSwing => r.lfclksrc.write(|w| {
             w.src().xtal();
-            w.external().enabled();
-            w.bypass().disabled();
+            #[cfg(not(feature = "nrf51"))]
+            {
+                w.external().enabled();
+                w.bypass().disabled();
+            }
             w
         }),
+        #[cfg(not(feature = "nrf51"))]
         config::LfclkSource::ExternalFullSwing => r.lfclksrc.write(|w| {
             w.src().xtal();
             w.external().enabled();
