@@ -32,6 +32,21 @@ pub(crate) mod sealed {
         fn waker(n: usize) -> &'static AtomicWaker;
     }
     pub trait ExtendedInstance {}
+
+    pub trait SupportsBitmode<T>
+    where
+        T: Bitmode,
+        // I'm not sure why this isn't just implicit
+        <T as TryFrom<u32>>::Error: Debug,
+    {
+    }
+}
+
+pub trait SupportsBitmode<T>: sealed::SupportsBitmode<T>
+where
+    T: Bitmode,
+    <T as TryFrom<u32>>::Error: Debug,
+{
 }
 
 pub trait Instance: Unborrow<Target = Self> + sealed::Instance + 'static {
@@ -57,7 +72,7 @@ macro_rules! impl_timer {
             type Interrupt = crate::interrupt::$irq;
         }
         $(
-            impl crate::timer::SupportsBitmode<$bitmode> for peripherals::$type {}
+            impl crate::timer::sealed::SupportsBitmode<$bitmode> for peripherals::$type {}
         )*
     };
     ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*]) => {
@@ -110,13 +125,6 @@ impl Bitmode for u32 {
     fn config(w: BITMODE_W) -> &mut bitmode::W {
         w._32bit()
     }
-}
-
-pub trait SupportsBitmode<T: Bitmode>
-where
-    // I'm not sure why this isn't just implicit
-    <T as TryFrom<u32>>::Error: Debug,
-{
 }
 
 /// nRF Timer driver.

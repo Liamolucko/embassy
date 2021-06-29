@@ -17,6 +17,7 @@ use crate::pac;
 use crate::ppi::{AnyConfigurableChannel, ConfigurableChannel, Event, Ppi, Task};
 use crate::timer::Frequency;
 use crate::timer::Instance as TimerInstance;
+use crate::timer::SupportsBitmode;
 use crate::timer::Timer;
 use crate::uarte::{Config, Instance as UarteInstance};
 
@@ -35,7 +36,7 @@ enum TxState {
     Transmitting(usize),
 }
 
-struct State<'d, U: UarteInstance, T: TimerInstance> {
+struct State<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> {
     phantom: PhantomData<&'d mut U>,
     timer: Timer<'d, T>,
     _ppi_ch1: Ppi<'d, AnyConfigurableChannel>,
@@ -58,11 +59,11 @@ struct State<'d, U: UarteInstance, T: TimerInstance> {
 ///   are disabled before using `Uarte`. See product specification:
 ///     - nrf52832: Section 15.2
 ///     - nrf52840: Section 6.1.2
-pub struct BufferedUarte<'d, U: UarteInstance, T: TimerInstance> {
+pub struct BufferedUarte<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> {
     inner: PeripheralMutex<State<'d, U, T>>,
 }
 
-impl<'d, U: UarteInstance, T: TimerInstance> BufferedUarte<'d, U, T> {
+impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> BufferedUarte<'d, U, T> {
     /// unsafe: may not leak self or futures
     pub unsafe fn new(
         _uarte: impl Unborrow<Target = U> + 'd,
@@ -192,7 +193,11 @@ impl<'d, U: UarteInstance, T: TimerInstance> BufferedUarte<'d, U, T> {
     }
 }
 
-impl<'d, U: UarteInstance, T: TimerInstance> AsyncBufRead for BufferedUarte<'d, U, T> {
+impl<'d, U, T> AsyncBufRead for BufferedUarte<'d, U, T>
+where
+    U: UarteInstance,
+    T: TimerInstance + SupportsBitmode<u32>,
+{
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<&[u8]>> {
         let mut inner = self.inner();
         inner.as_mut().register_interrupt();
@@ -229,7 +234,11 @@ impl<'d, U: UarteInstance, T: TimerInstance> AsyncBufRead for BufferedUarte<'d, 
     }
 }
 
-impl<'d, U: UarteInstance, T: TimerInstance> AsyncWrite for BufferedUarte<'d, U, T> {
+impl<'d, U, T> AsyncWrite for BufferedUarte<'d, U, T>
+where
+    U: UarteInstance,
+    T: TimerInstance + SupportsBitmode<u32>,
+{
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
         let mut inner = self.inner();
         inner.as_mut().register_interrupt();
@@ -261,7 +270,7 @@ impl<'d, U: UarteInstance, T: TimerInstance> AsyncWrite for BufferedUarte<'d, U,
     }
 }
 
-impl<'a, U: UarteInstance, T: TimerInstance> Drop for State<'a, U, T> {
+impl<'a, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> Drop for State<'a, U, T> {
     fn drop(&mut self) {
         let r = U::regs();
 
@@ -283,7 +292,11 @@ impl<'a, U: UarteInstance, T: TimerInstance> Drop for State<'a, U, T> {
     }
 }
 
-impl<'a, U: UarteInstance, T: TimerInstance> PeripheralState for State<'a, U, T> {
+impl<'a, U, T> PeripheralState for State<'a, U, T>
+where
+    U: UarteInstance,
+    T: TimerInstance + SupportsBitmode<u32>,
+{
     type Interrupt = U::Interrupt;
     fn on_interrupt(&mut self) {
         trace!("irq: start");

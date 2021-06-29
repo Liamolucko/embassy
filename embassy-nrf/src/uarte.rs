@@ -20,6 +20,7 @@ use crate::pac;
 use crate::ppi::{AnyConfigurableChannel, ConfigurableChannel, Event, Ppi, Task};
 use crate::timer::Frequency;
 use crate::timer::Instance as TimerInstance;
+use crate::timer::SupportsBitmode;
 use crate::timer::Timer;
 
 // Re-export SVD variants to allow user to directly set values.
@@ -287,14 +288,14 @@ impl<'d, T: Instance> Write for Uarte<'d, T> {
 
 /// Interface to an UARTE peripheral that uses an additional timer and two PPI channels,
 /// allowing it to implement the ReadUntilIdle trait.
-pub struct UarteWithIdle<'d, U: Instance, T: TimerInstance> {
+pub struct UarteWithIdle<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> {
     uarte: Uarte<'d, U>,
     timer: Timer<'d, T>,
     ppi_ch1: Ppi<'d, AnyConfigurableChannel>,
     _ppi_ch2: Ppi<'d, AnyConfigurableChannel>,
 }
 
-impl<'d, U: Instance, T: TimerInstance> UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> UarteWithIdle<'d, U, T> {
     /// Creates the interface to a UARTE instance.
     /// Sets the baud rate, parity and assigns the pins to the UARTE peripheral.
     ///
@@ -357,7 +358,9 @@ impl<'d, U: Instance, T: TimerInstance> UarteWithIdle<'d, U, T> {
     }
 }
 
-impl<'d, U: Instance, T: TimerInstance> ReadUntilIdle for UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> ReadUntilIdle
+    for UarteWithIdle<'d, U, T>
+{
     #[rustfmt::skip]
     type ReadUntilIdleFuture<'a> where Self: 'a = impl Future<Output = Result<usize, Error>> + 'a;
     fn read_until_idle<'a>(&'a mut self, rx_buffer: &'a mut [u8]) -> Self::ReadUntilIdleFuture<'a> {
@@ -417,7 +420,7 @@ impl<'d, U: Instance, T: TimerInstance> ReadUntilIdle for UarteWithIdle<'d, U, T
     }
 }
 
-impl<'d, U: Instance, T: TimerInstance> Read for UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> Read for UarteWithIdle<'d, U, T> {
     #[rustfmt::skip]
     type ReadFuture<'a> where Self: 'a = impl Future<Output = Result<(), Error>> + 'a;
     fn read<'a>(&'a mut self, rx_buffer: &'a mut [u8]) -> Self::ReadFuture<'a> {
@@ -430,7 +433,7 @@ impl<'d, U: Instance, T: TimerInstance> Read for UarteWithIdle<'d, U, T> {
     }
 }
 
-impl<'d, U: Instance, T: TimerInstance> Write for UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> Write for UarteWithIdle<'d, U, T> {
     #[rustfmt::skip]
     type WriteFuture<'a> where Self: 'a = impl Future<Output = Result<(), Error>> + 'a;
 
