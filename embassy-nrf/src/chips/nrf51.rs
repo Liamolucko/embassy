@@ -18,8 +18,6 @@ embassy_extras::peripherals! {
     TIMER0,
     TIMER1,
     TIMER2,
-    TIMER3,
-    TIMER4,
 
     // GPIOTE
     GPIOTE_CH0,
@@ -85,8 +83,10 @@ embassy_extras::peripherals! {
     P0_31,
 }
 
-// The other timers don't have 32-bit counters, so support for other BITMODEs is needed for those.
-impl_timer!(TIMER0, TIMER0, TIMER0);
+// Note: all the timers which support 32-bit also support 24-bit.
+impl_timer!(TIMER0, TIMER0, TIMER0, [u8, u16, u32]);
+impl_timer!(TIMER1, TIMER1, TIMER1, [u8, u16]);
+impl_timer!(TIMER2, TIMER2, TIMER2, [u8, u16]);
 
 impl_pin!(P0_00, 0, 0);
 impl_pin!(P0_01, 0, 1);

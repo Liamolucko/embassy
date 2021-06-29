@@ -118,10 +118,10 @@ impl_spim!(TWISPI1, SPIM1, SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1);
 impl_twim!(TWISPI0, TWIM0, SPIM0_SPIS0_TWIM0_TWIS0_SPI0_TWI0);
 impl_twim!(TWISPI1, TWIM1, SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1);
 
-impl_timer!(TIMER0, TIMER0, TIMER0);
-impl_timer!(TIMER1, TIMER1, TIMER1);
-impl_timer!(TIMER2, TIMER2, TIMER2);
-impl_timer!(TIMER3, TIMER3, TIMER3, extended);
+impl_timer!(TIMER0, TIMER0, TIMER0, [u8, u16, u32]);
+impl_timer!(TIMER1, TIMER1, TIMER1, [u8, u16, u32]);
+impl_timer!(TIMER2, TIMER2, TIMER2, [u8, u16, u32]);
+impl_timer!(TIMER3, TIMER3, TIMER3, [u8, u16, u32], extended);
 
 impl_pin!(P0_00, 0, 0);
 impl_pin!(P0_01, 0, 1);

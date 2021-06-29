@@ -1,5 +1,8 @@
 #![macro_use]
 
+use core::convert::TryFrom;
+use core::convert::TryInto;
+use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::task::Poll;
 
@@ -9,6 +12,8 @@ use embassy::util::OnDrop;
 use embassy::util::Unborrow;
 use embassy_extras::unborrow;
 use futures::future::poll_fn;
+use pac::timer0::bitmode;
+use pac::timer0::bitmode::BITMODE_W;
 
 use crate::pac;
 use crate::ppi::Event;
@@ -35,7 +40,7 @@ pub trait Instance: Unborrow<Target = Self> + sealed::Instance + 'static {
 pub trait ExtendedInstance: Instance + sealed::ExtendedInstance {}
 
 macro_rules! impl_timer {
-    ($type:ident, $pac_type:ident, $irq:ident, $ccs:literal) => {
+    ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*], $ccs:literal) => {
         impl crate::timer::sealed::Instance for peripherals::$type {
             const CCS: usize = $ccs;
             fn regs() -> &'static pac::timer0::RegisterBlock {
@@ -51,12 +56,15 @@ macro_rules! impl_timer {
         impl crate::timer::Instance for peripherals::$type {
             type Interrupt = crate::interrupt::$irq;
         }
+        $(
+            impl crate::timer::SupportsBitmode<$bitmode> for peripherals::$type {}
+        )*
     };
-    ($type:ident, $pac_type:ident, $irq:ident) => {
-        impl_timer!($type, $pac_type, $irq, 4);
+    ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*]) => {
+        impl_timer!($type, $pac_type, $irq, [$($bitmode),*], 4);
     };
-    ($type:ident, $pac_type:ident, $irq:ident, extended) => {
-        impl_timer!($type, $pac_type, $irq, 6);
+    ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*], extended) => {
+        impl_timer!($type, $pac_type, $irq, [$($bitmode),*], 6);
         impl crate::timer::sealed::ExtendedInstance for peripherals::$type {}
         impl crate::timer::ExtendedInstance for peripherals::$type {}
     };
@@ -77,18 +85,69 @@ pub enum Frequency {
     F31250Hz = 9,
 }
 
+pub trait Bitmode: TryFrom<u32> + Into<u32>
+where
+    <Self as TryFrom<u32>>::Error: Debug,
+{
+    fn config(w: BITMODE_W) -> &mut bitmode::W;
+}
+
+impl Bitmode for u8 {
+    fn config(w: BITMODE_W) -> &mut bitmode::W {
+        w._08bit()
+    }
+}
+
+impl Bitmode for u16 {
+    fn config(w: BITMODE_W) -> &mut bitmode::W {
+        w._16bit()
+    }
+}
+
+// TODO: support 24-bit bitmodes. Maybe use a `U24` wrapper type or something?
+
+impl Bitmode for u32 {
+    fn config(w: BITMODE_W) -> &mut bitmode::W {
+        w._32bit()
+    }
+}
+
+pub trait SupportsBitmode<T: Bitmode>
+where
+    // I'm not sure why this isn't just implicit
+    <T as TryFrom<u32>>::Error: Debug,
+{
+}
+
 /// nRF Timer driver.
 ///
 /// The timer has an internal counter, which is incremented for every tick of the timer.
-/// The counter is 32-bit, so it wraps back to 0 at 4294967296.
+/// The counter will wrap around when it overflows.
+///
+/// The size of the counter can vary. On most timers, it goes up to 32 bits, except for TIMER1 and TIMER2 on nrf51 chips.
+/// It can be specified through `Timer`'s second generic parameter, as `u8` for 8 bits, `u16` for 16 bits, etc.
+/// It defaults to 32 bits.
 ///
 /// It has either 4 or 6 Capture/Compare registers, which can be used to capture the current state of the counter
 /// or trigger an event when the counter reaches a certain value.
-pub struct Timer<'d, T: Instance> {
-    phantom: PhantomData<&'d mut T>,
+pub struct Timer<'d, T, B = u32>
+// TODO: should `B` default to `u16` instead for timers which don't support 32-bit bitmode?
+where
+    T: Instance,
+    B: Bitmode,
+    T: SupportsBitmode<B>,
+    <B as TryFrom<u32>>::Error: Debug,
+{
+    phantom: PhantomData<(&'d mut T, B)>,
 }
 
-impl<'d, T: Instance> Timer<'d, T> {
+impl<'d, T, B> Timer<'d, T, B>
+where
+    T: Instance,
+    B: Bitmode,
+    T: SupportsBitmode<B>,
+    <B as TryFrom<u32>>::Error: Debug,
+{
     pub fn new(
         timer: impl Unborrow<Target = T> + 'd,
         irq: impl Unborrow<Target = T::Interrupt> + 'd,
@@ -119,9 +178,8 @@ impl<'d, T: Instance> Timer<'d, T> {
         // Set the instance to timer mode.
         regs.mode.write(|w| w.mode().timer());
 
-        // Make the counter's max value as high as possible.
-        // TODO: is there a reason someone would want to set this lower?
-        regs.bitmode.write(|w| w.bitmode()._32bit());
+        // Configure bitmode
+        regs.bitmode.write(|w| B::config(w.bitmode()));
 
         // Initialize the counter at 0.
         this.clear();
@@ -135,7 +193,7 @@ impl<'d, T: Instance> Timer<'d, T> {
             cc.unshort_compare_clear();
             cc.unshort_compare_stop();
             // Initialize the CC registers as 0.
-            cc.write(0);
+            cc.write(0u32.try_into().unwrap()); // 0 is valid in any bitmode
         }
 
         this
@@ -208,7 +266,7 @@ impl<'d, T: Instance> Timer<'d, T> {
     ///
     /// # Panics
     /// Panics if `n` >= the number of CC registers this timer has (4 for a normal timer, 6 for an extended timer).
-    pub fn cc(&mut self, n: usize) -> Cc<T> {
+    pub fn cc(&mut self, n: usize) -> Cc<T, B> {
         if n >= T::CCS {
             panic!(
                 "Cannot get CC register {} of timer with {} CC registers.",
@@ -230,27 +288,41 @@ impl<'d, T: Instance> Timer<'d, T> {
 ///
 /// The timer will fire the register's COMPARE event when its counter reaches the value stored in the register.
 /// When the register's CAPTURE task is triggered, the timer will store the current value of its counter in the register
-pub struct Cc<'a, T: Instance> {
+pub struct Cc<'a, T, B>
+where
+    T: Instance,
+    B: Bitmode,
+    T: SupportsBitmode<B>,
+    <B as TryFrom<u32>>::Error: Debug,
+{
     n: usize,
-    phantom: PhantomData<&'a mut T>,
+    phantom: PhantomData<(&'a mut T, B)>,
 }
 
-impl<'a, T: Instance> Cc<'a, T> {
+impl<'a, T, B> Cc<'a, T, B>
+where
+    T: Instance,
+    B: Bitmode,
+    T: SupportsBitmode<B>,
+    <B as TryFrom<u32>>::Error: Debug,
+{
     /// Get the current value stored in the register.
-    pub fn read(&self) -> u32 {
-        T::regs().cc[self.n].read().bits()
+    pub fn read(&self) -> B {
+        // We initialize all the CC registers to 0, and then only ever write values of the correct bitmode to it.
+        // So, there should be no way an invalid value could be in there.
+        T::regs().cc[self.n].read().bits().try_into().unwrap()
     }
 
     /// Set the value stored in the register.
     ///
     /// `event_compare` will fire when the timer's counter reaches this value.
-    pub fn write(&self, value: u32) {
+    pub fn write(&self, value: B) {
         // SAFETY: there are no invalid values for the CC register.
-        T::regs().cc[self.n].write(|w| unsafe { w.bits(value) })
+        T::regs().cc[self.n].write(|w| unsafe { w.bits(value.into()) })
     }
 
     /// Capture the current value of the timer's counter in this register, and return it.
-    pub fn capture(&self) -> u32 {
+    pub fn capture(&self) -> B {
         T::regs().tasks_capture[self.n].write(|w| unsafe { w.bits(1) });
         self.read()
     }

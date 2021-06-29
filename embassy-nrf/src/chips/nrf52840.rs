@@ -158,11 +158,11 @@ impl_pwm!(PWM1, PWM1, PWM1);
 impl_pwm!(PWM2, PWM2, PWM2);
 impl_pwm!(PWM3, PWM3, PWM3);
 
-impl_timer!(TIMER0, TIMER0, TIMER0);
-impl_timer!(TIMER1, TIMER1, TIMER1);
-impl_timer!(TIMER2, TIMER2, TIMER2);
-impl_timer!(TIMER3, TIMER3, TIMER3, extended);
-impl_timer!(TIMER4, TIMER4, TIMER4, extended);
+impl_timer!(TIMER0, TIMER0, TIMER0, [u8, u16, u32]);
+impl_timer!(TIMER1, TIMER1, TIMER1, [u8, u16, u32]);
+impl_timer!(TIMER2, TIMER2, TIMER2, [u8, u16, u32]);
+impl_timer!(TIMER3, TIMER3, TIMER3, [u8, u16, u32], extended);
+impl_timer!(TIMER4, TIMER4, TIMER4, [u8, u16, u32], extended);
 
 impl_qspi!(QSPI, QSPI, QSPI);
 
