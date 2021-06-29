@@ -36,26 +36,22 @@ pub(crate) mod sealed {
     pub trait SupportsBitmode<T>
     where
         T: Bitmode,
-        // I'm not sure why this isn't just implicit
-        <T as TryFrom<u32>>::Error: Debug,
     {
     }
 }
 
-pub trait SupportsBitmode<T>: sealed::SupportsBitmode<T>
-where
-    T: Bitmode,
-    <T as TryFrom<u32>>::Error: Debug,
-{
-}
+pub trait SupportsBitmode<T: Bitmode>: sealed::SupportsBitmode<T> {}
 
-pub trait Instance: Unborrow<Target = Self> + sealed::Instance + 'static {
+pub trait Instance:
+    Unborrow<Target = Self> + sealed::Instance + SupportsBitmode<Self::MaxBitmode> + 'static
+{
+    type MaxBitmode: Bitmode;
     type Interrupt: Interrupt;
 }
 pub trait ExtendedInstance: Instance + sealed::ExtendedInstance {}
 
 macro_rules! impl_timer {
-    ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*], $ccs:literal) => {
+    ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*], $max_bitmode:path, $ccs:literal) => {
         impl crate::timer::sealed::Instance for peripherals::$type {
             const CCS: usize = $ccs;
             fn regs() -> &'static pac::timer0::RegisterBlock {
@@ -69,17 +65,19 @@ macro_rules! impl_timer {
             }
         }
         impl crate::timer::Instance for peripherals::$type {
+            type MaxBitmode = $max_bitmode;
             type Interrupt = crate::interrupt::$irq;
         }
         $(
             impl crate::timer::sealed::SupportsBitmode<$bitmode> for peripherals::$type {}
+            impl crate::timer::SupportsBitmode<$bitmode> for peripherals::$type {}
         )*
     };
-    ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*]) => {
-        impl_timer!($type, $pac_type, $irq, [$($bitmode),*], 4);
+    ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*], $max_bitmode:path) => {
+        impl_timer!($type, $pac_type, $irq, [$($bitmode),*], $max_bitmode, 4);
     };
-    ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*], extended) => {
-        impl_timer!($type, $pac_type, $irq, [$($bitmode),*], 6);
+    ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*], $max_bitmode:path, extended) => {
+        impl_timer!($type, $pac_type, $irq, [$($bitmode),*], $max_bitmode, 6);
         impl crate::timer::sealed::ExtendedInstance for peripherals::$type {}
         impl crate::timer::ExtendedInstance for peripherals::$type {}
     };
@@ -100,20 +98,22 @@ pub enum Frequency {
     F31250Hz = 9,
 }
 
-pub trait Bitmode: TryFrom<u32> + Into<u32>
-where
-    <Self as TryFrom<u32>>::Error: Debug,
-{
+pub trait Bitmode: TryFrom<u32, Error = Self::Err> + Into<u32> {
+    // If we don't do this, we end up having to include ridiculous `where` clauses on everything.
+    // (due to https://github.com/rust-lang/rust/issues/20671, i think)
+    type Err: Debug;
     fn config(w: BITMODE_W) -> &mut bitmode::W;
 }
 
 impl Bitmode for u8 {
+    type Err = <Self as TryFrom<u32>>::Error;
     fn config(w: BITMODE_W) -> &mut bitmode::W {
         w._08bit()
     }
 }
 
 impl Bitmode for u16 {
+    type Err = <Self as TryFrom<u32>>::Error;
     fn config(w: BITMODE_W) -> &mut bitmode::W {
         w._16bit()
     }
@@ -122,6 +122,7 @@ impl Bitmode for u16 {
 // TODO: support 24-bit bitmodes. Maybe use a `U24` wrapper type or something?
 
 impl Bitmode for u32 {
+    type Err = <Self as TryFrom<u32>>::Error;
     fn config(w: BITMODE_W) -> &mut bitmode::W {
         w._32bit()
     }
@@ -134,17 +135,15 @@ impl Bitmode for u32 {
 ///
 /// The size of the counter can vary. On most timers, it goes up to 32 bits, except for TIMER1 and TIMER2 on nrf51 chips.
 /// It can be specified through `Timer`'s second generic parameter, as `u8` for 8 bits, `u16` for 16 bits, etc.
-/// It defaults to 32 bits.
+/// It defaults to the highest number of bits the timer supports.
 ///
 /// It has either 4 or 6 Capture/Compare registers, which can be used to capture the current state of the counter
 /// or trigger an event when the counter reaches a certain value.
-pub struct Timer<'d, T, B = u32>
-// TODO: should `B` default to `u16` instead for timers which don't support 32-bit bitmode?
+pub struct Timer<'d, T, B = <T as Instance>::MaxBitmode>
 where
     T: Instance,
     B: Bitmode,
     T: SupportsBitmode<B>,
-    <B as TryFrom<u32>>::Error: Debug,
 {
     phantom: PhantomData<(&'d mut T, B)>,
 }
@@ -154,7 +153,6 @@ where
     T: Instance,
     B: Bitmode,
     T: SupportsBitmode<B>,
-    <B as TryFrom<u32>>::Error: Debug,
 {
     pub fn new(
         timer: impl Unborrow<Target = T> + 'd,
@@ -301,7 +299,6 @@ where
     T: Instance,
     B: Bitmode,
     T: SupportsBitmode<B>,
-    <B as TryFrom<u32>>::Error: Debug,
 {
     n: usize,
     phantom: PhantomData<(&'a mut T, B)>,
@@ -312,7 +309,6 @@ where
     T: Instance,
     B: Bitmode,
     T: SupportsBitmode<B>,
-    <B as TryFrom<u32>>::Error: Debug,
 {
     /// Get the current value stored in the register.
     pub fn read(&self) -> B {
