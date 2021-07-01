@@ -33,27 +33,40 @@ pub struct Rng<'d> {
 }
 
 impl<'d> IrqRead for Rng<'d> {
+    #[inline]
     fn state() -> &'static crate::util::IrqIoState {
         &STATE
     }
 
+    #[inline]
     fn enable_irq(&self) {
         RNG::regs().intenset.write(|w| w.valrdy().set());
     }
 
-    fn disable_irq(&self) {
+    #[inline]
+    fn disable_irq() {
         RNG::regs().intenclr.write(|w| w.valrdy().clear());
     }
 
+    #[inline]
     fn start(&self) {
+        // SAFETY: 1 is a valid variant of `tasks_start`.
         RNG::regs().tasks_start.write(|w| unsafe { w.bits(1) })
     }
 
+    #[inline]
     fn stop(&self) {
+        // SAFETY: 1 is a valid variant of `tasks_start`.
         RNG::regs().tasks_stop.write(|w| unsafe { w.bits(1) })
     }
 
-    fn next_value() -> u8 {
+    #[inline]
+    fn clear_event() {
+        RNG::regs().events_valrdy.reset()
+    }
+
+    #[inline]
+    fn next_byte() -> u8 {
         RNG::regs().value.read().value().bits()
     }
 }
@@ -78,7 +91,7 @@ impl<'d> Rng<'d> {
         };
 
         this.stop();
-        this.disable_irq();
+        Self::disable_irq();
 
         this.irq.set_handler(Self::on_interrupt);
         this.irq.unpend();
@@ -88,9 +101,6 @@ impl<'d> Rng<'d> {
     }
 
     fn on_interrupt(_: *mut ()) {
-        // Clear the event.
-        RNG::regs().events_valrdy.reset();
-
         // Defer to `IrqRead`.
         Self::on_irq();
     }
@@ -101,6 +111,7 @@ impl<'d> Rng<'d> {
     /// However, this makes the generation of numbers slower.
     ///
     /// Defaults to disabled.
+    #[inline]
     pub fn bias_correction(&self, enable: bool) {
         RNG::regs().config.write(|w| w.dercen().bit(enable))
     }
@@ -118,6 +129,7 @@ impl<'d> traits::rng::Rng for Rng<'d> {
     #[rustfmt::skip] // For some reason rustfmt removes the where clause
     type RngFuture<'a> where 'd: 'a = impl Future<Output = Result<(), Self::Error>> + 'a;
 
+    #[inline]
     fn fill_bytes<'a>(&'a mut self, dest: &'a mut [u8]) -> Self::RngFuture<'a> {
         // SAFETY: `irq_read`'s safety contract is forwarded to `Rng::new`.
         unsafe { irq_read(self, dest) }.map(|_| Ok(()))
@@ -138,6 +150,7 @@ impl<'d> RngCore for Rng<'d> {
         self.stop();
     }
 
+    #[inline]
     fn next_u32(&mut self) -> u32 {
         let mut bytes = [0; 4];
         self.fill_bytes(&mut bytes);
@@ -145,12 +158,14 @@ impl<'d> RngCore for Rng<'d> {
         u32::from_ne_bytes(bytes)
     }
 
+    #[inline]
     fn next_u64(&mut self) -> u64 {
         let mut bytes = [0; 8];
         self.fill_bytes(&mut bytes);
         u64::from_ne_bytes(bytes)
     }
 
+    #[inline]
     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
         self.fill_bytes(dest);
         Ok(())

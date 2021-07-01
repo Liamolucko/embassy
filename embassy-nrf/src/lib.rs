@@ -19,7 +19,7 @@
     feature = "nrf5340-net",
     feature = "nrf9160",
 )))]
-compile_error!("No chip feature activated. You must activate exactly one of the following features: nrf52810, nrf52811, nrf52832, nrf52833, nrf52840");
+compile_error!("No chip feature activated. You must activate exactly one of the following features: nrf51, nrf52810, nrf52811, nrf52832, nrf52833, nrf52840");
 
 // This mod MUST go first, so that the others see its macros.
 pub(crate) mod fmt;
@@ -43,8 +43,7 @@ pub mod spim;
 pub mod timer;
 #[cfg(not(feature = "nrf51"))]
 pub mod twim;
-#[cfg(not(feature = "nrf51"))]
-pub mod uarte;
+pub mod uart;
 
 // This mod MUST go last, so that it sees all the `impl_foo!` macros
 #[cfg(feature = "nrf51")]

@@ -19,7 +19,7 @@ use crate::timer::Frequency;
 use crate::timer::Instance as TimerInstance;
 use crate::timer::SupportsBitmode;
 use crate::timer::Timer;
-use crate::uarte::{Config, Instance as UarteInstance};
+use crate::uart::{Config, Instance as UarteInstance};
 
 // Re-export SVD variants to allow user to directly set values
 pub use pac::uarte0::{baudrate::BAUDRATE_A as Baudrate, config::PARITY_A as Parity};
