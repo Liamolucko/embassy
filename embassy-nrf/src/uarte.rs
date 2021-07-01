@@ -288,14 +288,14 @@ impl<'d, T: Instance> Write for Uarte<'d, T> {
 
 /// Interface to an UARTE peripheral that uses an additional timer and two PPI channels,
 /// allowing it to implement the ReadUntilIdle trait.
-pub struct UarteWithIdle<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> {
+pub struct UarteWithIdle<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> {
     uarte: Uarte<'d, U>,
-    timer: Timer<'d, T>,
+    timer: Timer<'d, T, u16>,
     ppi_ch1: Ppi<'d, AnyConfigurableChannel>,
     _ppi_ch2: Ppi<'d, AnyConfigurableChannel>,
 }
 
-impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> UarteWithIdle<'d, U, T> {
     /// Creates the interface to a UARTE instance.
     /// Sets the baud rate, parity and assigns the pins to the UARTE peripheral.
     ///
@@ -319,7 +319,7 @@ impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> UarteWithIdle<'d,
     ) -> Self {
         let baudrate = config.baudrate;
         let uarte = Uarte::new(uarte, irq, rxd, txd, cts, rts, config);
-        let mut timer = Timer::new_irqless(timer);
+        let mut timer: Timer<T, u16> = Timer::new_irqless(timer);
 
         unborrow!(ppi_ch1, ppi_ch2);
 
@@ -331,7 +331,7 @@ impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> UarteWithIdle<'d,
         // We want to stop RX if line is idle for 2 bytes worth of time
         // That is 20 bits (each byte is 1 start bit + 8 data bits + 1 stop bit)
         // This gives us the amount of 16M ticks for 20 bits.
-        let timeout = 0x8000_0000 / (baudrate as u32 / 40);
+        let timeout = (0x8000_0000 / (baudrate as u32 / 40)) as u16;
 
         timer.set_frequency(Frequency::F16MHz);
         timer.cc(0).write(timeout);
@@ -358,7 +358,7 @@ impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> UarteWithIdle<'d,
     }
 }
 
-impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> ReadUntilIdle
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> ReadUntilIdle
     for UarteWithIdle<'d, U, T>
 {
     #[rustfmt::skip]
@@ -420,7 +420,7 @@ impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> ReadUntilIdle
     }
 }
 
-impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> Read for UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> Read for UarteWithIdle<'d, U, T> {
     #[rustfmt::skip]
     type ReadFuture<'a> where Self: 'a = impl Future<Output = Result<(), Error>> + 'a;
     fn read<'a>(&'a mut self, rx_buffer: &'a mut [u8]) -> Self::ReadFuture<'a> {
@@ -433,7 +433,7 @@ impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> Read for UarteWit
     }
 }
 
-impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u32>> Write for UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> Write for UarteWithIdle<'d, U, T> {
     #[rustfmt::skip]
     type WriteFuture<'a> where Self: 'a = impl Future<Output = Result<(), Error>> + 'a;
 

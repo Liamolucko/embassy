@@ -36,9 +36,9 @@ enum TxState {
     Transmitting(usize),
 }
 
-struct State<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> {
+struct State<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> {
     phantom: PhantomData<&'d mut U>,
-    timer: Timer<'d, T>,
+    timer: Timer<'d, T, u16>,
     _ppi_ch1: Ppi<'d, AnyConfigurableChannel>,
     _ppi_ch2: Ppi<'d, AnyConfigurableChannel>,
 
@@ -59,11 +59,11 @@ struct State<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> {
 ///   are disabled before using `Uarte`. See product specification:
 ///     - nrf52832: Section 15.2
 ///     - nrf52840: Section 6.1.2
-pub struct BufferedUarte<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> {
+pub struct BufferedUarte<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> {
     inner: PeripheralMutex<State<'d, U, T>>,
 }
 
-impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> BufferedUarte<'d, U, T> {
+impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUarte<'d, U, T> {
     /// unsafe: may not leak self or futures
     pub unsafe fn new(
         _uarte: impl Unborrow<Target = U> + 'd,
@@ -83,7 +83,7 @@ impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> BufferedUart
 
         let r = U::regs();
 
-        let mut timer = Timer::new_irqless(timer);
+        let mut timer: Timer<T, u16> = Timer::new_irqless(timer);
 
         rxd.conf().write(|w| w.input().connect().drive().h0h1());
         r.psel.rxd.write(|w| unsafe { w.bits(rxd.psel_bits()) });
@@ -135,7 +135,7 @@ impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> BufferedUart
         // We want to stop RX if line is idle for 2 bytes worth of time
         // That is 20 bits (each byte is 1 start bit + 8 data bits + 1 stop bit)
         // This gives us the amount of 16M ticks for 20 bits.
-        let timeout = 0x8000_0000 / (config.baudrate as u32 / 40);
+        let timeout = (0x8000_0000 / (config.baudrate as u32 / 40)) as u16;
 
         timer.set_frequency(Frequency::F16MHz);
         timer.cc(0).write(timeout);
@@ -180,7 +180,7 @@ impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> BufferedUart
         inner.with(|state, _irq| {
             let r = U::regs();
 
-            let timeout = 0x8000_0000 / (baudrate as u32 / 40);
+            let timeout = (0x8000_0000 / (baudrate as u32 / 40)) as u16;
             state.timer.cc(0).write(timeout);
             state.timer.clear();
 
@@ -196,7 +196,7 @@ impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> BufferedUart
 impl<'d, U, T> AsyncBufRead for BufferedUarte<'d, U, T>
 where
     U: UarteInstance,
-    T: TimerInstance + SupportsBitmode<u32>,
+    T: TimerInstance + SupportsBitmode<u16>,
 {
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<&[u8]>> {
         let mut inner = self.inner();
@@ -237,7 +237,7 @@ where
 impl<'d, U, T> AsyncWrite for BufferedUarte<'d, U, T>
 where
     U: UarteInstance,
-    T: TimerInstance + SupportsBitmode<u32>,
+    T: TimerInstance + SupportsBitmode<u16>,
 {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
         let mut inner = self.inner();
@@ -270,7 +270,7 @@ where
     }
 }
 
-impl<'a, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> Drop for State<'a, U, T> {
+impl<'a, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> Drop for State<'a, U, T> {
     fn drop(&mut self) {
         let r = U::regs();
 
@@ -295,7 +295,7 @@ impl<'a, U: UarteInstance, T: TimerInstance + SupportsBitmode<u32>> Drop for Sta
 impl<'a, U, T> PeripheralState for State<'a, U, T>
 where
     U: UarteInstance,
-    T: TimerInstance + SupportsBitmode<u32>,
+    T: TimerInstance + SupportsBitmode<u16>,
 {
     type Interrupt = U::Interrupt;
     fn on_interrupt(&mut self) {
