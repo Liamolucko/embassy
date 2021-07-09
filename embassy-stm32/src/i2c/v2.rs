@@ -18,7 +18,6 @@ pub struct I2c<'d, T: Instance> {
 
 impl<'d, T: Instance> I2c<'d, T> {
     pub fn new<F>(
-        pclk: Hertz,
         _peri: impl Unborrow<Target = T> + 'd,
         scl: impl Unborrow<Target = impl SclPin<T>>,
         sda: impl Unborrow<Target = impl SdaPin<T>>,
@@ -28,6 +27,8 @@ impl<'d, T: Instance> I2c<'d, T> {
         F: Into<Hertz>,
     {
         unborrow!(scl, sda);
+
+        T::enable();
 
         unsafe {
             Self::configure_pin(scl.block(), scl.pin() as _, scl.af_num());
@@ -41,7 +42,7 @@ impl<'d, T: Instance> I2c<'d, T> {
             });
         }
 
-        let timings = Timings::new(pclk, freq.into());
+        let timings = Timings::new(T::frequency(), freq.into());
 
         unsafe {
             T::regs().timingr().write(|reg| {

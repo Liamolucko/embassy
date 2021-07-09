@@ -6,9 +6,8 @@ use embassy_extras::unsafe_impl_unborrow;
 use embedded_hal::digital::v2::{InputPin, StatefulOutputPin};
 use futures::future::poll_fn;
 
-#[cfg(any(feature = "nrf52833", feature = "nrf52840"))]
-use crate::gpio::Port;
-use crate::gpio::{Input, Output, Pin as GpioPin};
+use crate::gpio::sealed::Pin as _;
+use crate::gpio::{AnyPin, Input, Output, Pin as GpioPin};
 use crate::pac;
 use crate::ppi::{Event, Task};
 use crate::{interrupt, peripherals};
@@ -141,8 +140,8 @@ impl<'d, C: Channel, T: GpioPin> InputChannel<'d, C, T> {
             };
             #[cfg(any(feature = "nrf52833", feature = "nrf52840"))]
             w.port().bit(match pin.pin.port() {
-                Port::Port0 => false,
-                Port::Port1 => true,
+                crate::gpio::Port::Port0 => false,
+                crate::gpio::Port::Port1 => true,
             });
             unsafe { w.psel().bits(pin.pin.pin()) }
         });
@@ -224,8 +223,8 @@ impl<'d, C: Channel, T: GpioPin> OutputChannel<'d, C, T> {
             };
             #[cfg(any(feature = "nrf52833", feature = "nrf52840"))]
             w.port().bit(match pin.pin.port() {
-                Port::Port0 => false,
-                Port::Port1 => true,
+                crate::gpio::Port::Port0 => false,
+                crate::gpio::Port::Port1 => true,
             });
             unsafe { w.psel().bits(pin.pin.pin()) }
         });

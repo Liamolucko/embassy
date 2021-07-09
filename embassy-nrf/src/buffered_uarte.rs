@@ -7,7 +7,7 @@ use core::task::{Context, Poll};
 use embassy::interrupt::InterruptExt;
 use embassy::io::{AsyncBufRead, AsyncWrite, Result};
 use embassy::util::{Unborrow, WakerRegistration};
-use embassy_extras::peripheral::{PeripheralMutex, PeripheralState};
+use embassy_extras::peripheral::{PeripheralMutex, PeripheralStateUnchecked};
 use embassy_extras::ring_buffer::RingBuffer;
 use embassy_extras::{low_power_wait_until, unborrow};
 
@@ -292,7 +292,8 @@ impl<'a, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> Drop for Sta
     }
 }
 
-impl<'a, U, T> PeripheralState for State<'a, U, T>
+// SAFETY: the safety contract of `PeripheralStateUnchecked` is forwarded to `BufferedUarte::new`.
+impl<'a, U, T> PeripheralStateUnchecked for State<'a, U, T>
 where
     U: UarteInstance,
     T: TimerInstance + SupportsBitmode<u16>,

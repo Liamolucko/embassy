@@ -1,3 +1,4 @@
+
 #![no_std]
 #![no_main]
 #![feature(trait_alias)]
@@ -8,15 +9,45 @@
 
 #[path = "../example_common.rs"]
 mod example_common;
-use embassy_stm32::gpio::{Level, Output, Speed};
-use embedded_hal::digital::v2::OutputPin;
+use cortex_m::prelude::_embedded_hal_blocking_serial_Write;
+use embassy::executor::Executor;
+use embassy::time::Clock;
+use embassy::util::Forever;
+use embassy_stm32::usart::{Config, Uart};
 use example_common::*;
+
+use stm32h7xx_hal as hal;
+use hal::prelude::*;
 
 use cortex_m_rt::entry;
 use stm32h7::stm32h743 as pac;
 
-use hal::prelude::*;
-use stm32h7xx_hal as hal;
+#[embassy::task]
+async fn main_task() {
+    let p = embassy_stm32::init(Default::default());
+
+    let config = Config::default();
+    let mut usart = Uart::new(p.UART7, p.PF6, p.PF7, config);
+
+    usart.bwrite_all(b"Hello Embassy World!\r\n").unwrap();
+    info!("wrote Hello, starting echo");
+
+    let mut buf = [0u8; 1];
+    loop {
+        usart.read(&mut buf).unwrap();
+        usart.bwrite_all(&buf).unwrap();
+    }
+}
+
+struct ZeroClock;
+
+impl Clock for ZeroClock {
+    fn now(&self) -> u64 {
+        0
+    }
+}
+
+static EXECUTOR: Forever<Executor> = Forever::new();
 
 #[entry]
 fn main() -> ! {
@@ -57,17 +88,12 @@ fn main() -> ! {
         w
     });
 
-    let p = embassy_stm32::init(Default::default());
 
-    let mut led = Output::new(p.PB14, Level::High, Speed::Low);
+    unsafe { embassy::time::set_clock(&ZeroClock) };
 
-    loop {
-        info!("high");
-        led.set_high().unwrap();
-        cortex_m::asm::delay(10_000_000);
+    let executor = EXECUTOR.put(Executor::new());
 
-        info!("low");
-        led.set_low().unwrap();
-        cortex_m::asm::delay(10_000_000);
-    }
+    executor.run(|spawner| {
+        unwrap!(spawner.spawn(main_task()));
+    })
 }
