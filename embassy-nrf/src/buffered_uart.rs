@@ -130,18 +130,18 @@ impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUart<
         });
         r.baudrate.write(|w| w.baudrate().variant(config.baudrate));
 
-        // Enable interrupts
-        #[cfg(not(feature = "nrf51"))]
-        r.intenset.write(|w| w.endrx().set().endtx().set());
-        #[cfg(feature = "nrf51")]
-        r.intenset.write(|w| w.rxdrdy().set().txdrdy().set());
-
         // Disable the irq, let the Registration enable it when everything is set up.
         irq.disable();
         irq.pend();
 
         // Enable UARTE instance
         r.enable.write(|w| w.enable().enabled());
+
+        // Enable interrupts
+        #[cfg(not(feature = "nrf51"))]
+        r.intenset.write(|w| w.endrx().set().endtx().set());
+        #[cfg(feature = "nrf51")]
+        r.intenset.write(|w| w.rxdrdy().set().txdrdy().set());
 
         // BAUDRATE register values are `baudrate * 2^32 / 16000000`
         // source: https://devzone.nordicsemi.com/f/nordic-q-a/391/uart-baudrate-register-values
@@ -301,9 +301,18 @@ impl<'a, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> Drop for Buff
 
                 if state.rx_state == RxState::Receiving {
                     r.tasks_stoprx.write(|w| unsafe { w.bits(1) });
+
+                    // Mark the rx buffer as full so that we don't just immediately start recieving again.
+                    // We need to do it twice because `push_buf` only returns the first contiguous part of the buffer;
+                    // there can also be a second contiguous part after the buffer wraps around.
+                    for _ in 0..2 {
+                        let len = state.rx.push_buf().len();
+                        state.rx.push(len);
+                    }
                 }
             });
 
+            #[cfg(not(feature = "nrf51"))]
             r.intenset.write(|w| w.rxto().set());
             low_power_wait_until(|| {
                 inner.as_mut().with(|state, _| {
@@ -381,8 +390,18 @@ where
                             unsafe { w.bits(1) });
 
                         #[cfg(feature = "nrf51")]
-                        // Drain any bytes which were already buffered in the FIFO.
-                        continue;
+                        {
+                            // There's no ENDRX on the nrf51,
+                            // so the only way we can trigger the interrupt idle timer triggered STOPRX
+                            // is by using RXTO.
+                            // We want to leave the event set after reception is finished though,
+                            // so that we can check for it in the destructor.
+                            // So only have the interrupt for it enabled when we're currently recieving.
+                            r.intenset.write(|w| w.rxto().set());
+
+                            // Drain any bytes which were already buffered in the FIFO.
+                            continue;
+                        }
                     }
                     break;
                 }
@@ -408,6 +427,15 @@ where
                                 continue;
                             }
                         }
+                    }
+                    #[cfg(feature = "nrf51")]
+                    if r.events_rxto.read().bits() != 0 {
+                        // We want RXTO to remain fired so we know RX is done in the destructor.
+                        // So clear the interrupt instead of the event to stop it being re-fired.
+                        r.intenclr.write(|w| w.rxto().clear());
+                        self.rx_waker.wake();
+                        self.rx_state = RxState::Idle;
+                        continue;
                     }
                     #[cfg(not(feature = "nrf51"))]
                     if r.events_endrx.read().bits() != 0 {
@@ -500,6 +528,7 @@ where
             }
         }
 
+        #[cfg(not(feature = "nrf51"))]
         if r.events_rxto.read().bits() != 0 {
             r.intenclr.write(|w| w.rxto().clear());
         }
