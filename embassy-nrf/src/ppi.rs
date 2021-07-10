@@ -208,29 +208,17 @@ impl_channel!(PPI_CH17, 17, configurable);
 impl_channel!(PPI_CH18, 18, configurable);
 #[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH19, 19, configurable);
-#[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH20, 20);
-#[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH21, 21);
-#[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH22, 22);
-#[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH23, 23);
-#[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH24, 24);
-#[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH25, 25);
-#[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH26, 26);
-#[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH27, 27);
-#[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH28, 28);
-#[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH29, 29);
-#[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH30, 30);
-#[cfg(not(feature = "nrf51"))]
 impl_channel!(PPI_CH31, 31);
 
 // ======================
