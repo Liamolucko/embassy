@@ -25,8 +25,7 @@ compile_error!("No chip feature activated. You must activate exactly one of the 
 pub(crate) mod fmt;
 pub(crate) mod util;
 
-#[cfg(not(feature = "nrf51"))]
-pub mod buffered_uarte;
+pub mod buffered_uart;
 pub mod gpio;
 pub mod gpiote;
 pub mod ppi;

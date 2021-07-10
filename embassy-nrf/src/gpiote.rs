@@ -6,8 +6,7 @@ use embassy_extras::unsafe_impl_unborrow;
 use embedded_hal::digital::v2::{InputPin, StatefulOutputPin};
 use futures::future::poll_fn;
 
-use crate::gpio::sealed::Pin as _;
-use crate::gpio::{AnyPin, Input, Output, Pin as GpioPin};
+use crate::gpio::{Input, Output, Pin as GpioPin};
 use crate::pac;
 use crate::ppi::{Event, Task};
 use crate::{interrupt, peripherals};

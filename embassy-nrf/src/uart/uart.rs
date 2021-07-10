@@ -213,7 +213,7 @@ impl<'d, T: Instance> IrqWrite for Uart<'d, T> {
     }
 
     #[inline]
-    fn disable_irq(&self) {
+    fn disable_irq() {
         T::regs().intenclr.write(|w| w.txdrdy().clear())
     }
 

@@ -54,6 +54,11 @@ impl<S: PeripheralStateUnchecked> PeripheralMutex<S> {
         }
     }
 
+    /// Whether `register_interrupt` has already been called.
+    pub fn setup_done(&self) -> bool {
+        self.irq_setup_done
+    }
+
     pub fn register_interrupt(self: Pin<&mut Self>) {
         let this = unsafe { self.get_unchecked_mut() };
         if this.irq_setup_done {

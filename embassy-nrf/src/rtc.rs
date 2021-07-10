@@ -145,7 +145,10 @@ impl<T: Instance> RTC<T> {
     fn next_period(&self) {
         critical_section::with(|cs| {
             let r = self.rtc.regs();
-            let period = self.period.fetch_add(1, Ordering::Relaxed) + 1;
+            // The nrf51 only has basic atomic loads/stores, so we can't use `fetch_add`.
+            // We're in a critical section, so nobody can preempt us.
+            let period = self.period.load(Ordering::Relaxed) + 1;
+            self.period.store(period, Ordering::Relaxed);
             let t = (period as u64) << 23;
 
             for n in 0..ALARM_COUNT {

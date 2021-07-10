@@ -71,7 +71,7 @@ pub trait IrqRead {
 
         // Mutate the slice within a critical section,
         // so that the future isn't dropped in between us loading the pointer and actually dereferencing it.
-        let (ptr, end) = critical_section::with(|_| {
+        critical_section::with(|_| {
             let ptr = Self::state().ptr.load(Ordering::Relaxed);
             // We need to make sure we haven't already filled the whole slice,
             // in case the interrupt fired again before the executor got back to the future.
@@ -92,36 +92,18 @@ pub trait IrqRead {
                 unsafe {
                     *ptr = Self::next_byte();
                 }
+
+                let new_ptr = unsafe { ptr.add(1) };
+                if new_ptr == end {
+                    Self::state().waker.wake();
+                }
+                Self::state().ptr.store(new_ptr, Ordering::Relaxed);
             } else {
                 // If we're not clearing the event, we have to disable the interrupt,
                 // otherwise the interrupt gets re-fired as soon as it exits.
                 Self::disable_irq();
             }
-            (ptr, end)
         });
-
-        if ptr.is_null() || ptr == end {
-            // If the future was dropped, there's nothing to do.
-            // If `ptr == end`, we were called by mistake, so return.
-            return;
-        }
-
-        let new_ptr = unsafe { ptr.add(1) };
-        match Self::state()
-            .ptr
-            .compare_exchange(ptr, new_ptr, Ordering::Relaxed, Ordering::Relaxed)
-        {
-            Ok(_) => {
-                let end = Self::state().end.load(Ordering::Relaxed);
-                // It doesn't matter if `end` was changed under our feet, because then this will just be false.
-                if new_ptr == end {
-                    Self::state().waker.wake();
-                }
-            }
-            Err(_) => {
-                // If the future was dropped or finished, there's no point trying to wake it.
-            }
-        }
     }
 }
 
@@ -180,7 +162,7 @@ pub trait IrqWrite {
     fn state() -> &'static IrqIoState;
 
     fn enable_irq(&self);
-    fn disable_irq(&self);
+    fn disable_irq();
 
     fn start(&self);
     fn stop(&self);
@@ -195,55 +177,41 @@ pub trait IrqWrite {
 
         // Actually dereference `ptr` in a critical section,
         // so that the future isn't dropped in between us loading the pointer and actually dereferencing it.
-        let (ptr, end) = critical_section::with(|_| {
+        critical_section::with(|_| {
             let old_ptr = Self::state().ptr.load(Ordering::Relaxed) as *const u8;
             // We need to check if this is the `txdrdy` fired after the last byte has been sent,
             // so that we don't attempt to send another byte and dereference an invalid pointer.
             let end = Self::state().end.load(Ordering::Relaxed) as *const u8;
             trace!("  old_ptr: {}, end: {}", old_ptr, end);
-            // If the future was dropped, there's nothing we need to do.
-            if !old_ptr.is_null() {
-                // Only clear the event if the future hasn't been dropped,
-                // because it's used to detect when the last byte has been sent before finishing dropping.
-                Self::clear_event();
+            if old_ptr.is_null() {
+                // If we aren't going to clear the event, we need to disable the interrupt to prevent it being immediately re-fired.
+                Self::disable_irq();
 
-                // `ptr` is 1 less than the thing we actually want to dereference,
-                // so that `ptr == end` only becomes true after the final byte is actually sent (and fires `txdrdy` again).
-                let ptr = unsafe { old_ptr.add(1) };
-                // If `ptr == end`, it's a pointer to just after the end of the slice, so we can't dereference it.
-                if ptr != end {
-                    trace!("  sending byte {}", unsafe { *ptr });
-                    // If the future was dropped, the pointer would have been set to null,
-                    // so we're still good to read from the slice.
-                    // The safety contract of `irq_write` means that the future can't have been dropped
-                    // without calling its destructor.
-                    Self::set_next_byte(unsafe { *ptr })
-                }
+                // If the future was dropped, there's nothing we need to do.
+                return;
             }
-            (old_ptr, end)
+            // Only clear the event if the future hasn't been dropped,
+            // because it's used to detect when the last byte has been sent before finishing dropping.
+            Self::clear_event();
+
+            // `ptr` is 1 less than the thing we actually want to dereference,
+            // so that `ptr == end` only becomes true after the final byte is actually sent (and fires `txdrdy` again).
+            let ptr = unsafe { old_ptr.add(1) };
+            // If `ptr == end`, it's a pointer to just after the end of the slice, so we can't dereference it.
+            if ptr != end {
+                trace!("  sending byte {}", unsafe { *ptr });
+                // If the future was dropped, the pointer would have been set to null,
+                // so we're still good to read from the slice.
+                // The safety contract of `irq_write` means that the future can't have been dropped
+                // without calling its destructor.
+                Self::set_next_byte(unsafe { *ptr })
+            } else {
+                trace!("  waking");
+                // This was the final `txdrdy` after sending the last byte, time to wake the future.
+                Self::state().waker.wake();
+            }
+            Self::state().ptr.store(ptr as *mut u8, Ordering::Relaxed);
         });
-        if ptr.is_null() {
-            // If the future was dropped, there's nothing we need to do.
-            return;
-        }
-        let new_ptr = unsafe { ptr.add(1) };
-        match Self::state().ptr.compare_exchange(
-            ptr as *mut u8,
-            new_ptr as *mut u8,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => {
-                if new_ptr == end {
-                    trace!("  waking");
-                    // This was the final `txdrdy` after sending the last byte, time to wake the future.
-                    Self::state().waker.wake();
-                }
-            }
-            Err(_) => {
-                // The future was dropped, there's no point trying to wake it.
-            }
-        }
     }
 }
 
@@ -289,7 +257,7 @@ pub async unsafe fn irq_write<T: IrqWrite>(this: &mut T, buf: &[u8]) {
 
         // Now we can safely stop the transmission.
         this.stop();
-        this.disable_irq();
+        T::disable_irq();
     });
 
     poll_fn(|cx| {
@@ -315,7 +283,7 @@ pub async unsafe fn irq_write<T: IrqWrite>(this: &mut T, buf: &[u8]) {
     on_drop.defuse();
 
     this.stop();
-    this.disable_irq();
+    T::disable_irq();
 
     T::state().ptr.store(ptr::null_mut(), Ordering::Relaxed);
     T::state().end.store(ptr::null_mut(), Ordering::Relaxed);

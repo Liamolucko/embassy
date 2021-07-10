@@ -12,17 +12,16 @@ use embassy_extras::ring_buffer::RingBuffer;
 use embassy_extras::{low_power_wait_until, unborrow};
 
 use crate::gpio::sealed::Pin as _;
-use crate::gpio::{OptionalPin as GpioOptionalPin, Pin as GpioPin};
-use crate::pac;
+use crate::gpio::{self, OptionalPin as GpioOptionalPin, Pin as GpioPin};
 use crate::ppi::{AnyConfigurableChannel, ConfigurableChannel, Event, Ppi, Task};
 use crate::timer::Frequency;
 use crate::timer::Instance as TimerInstance;
 use crate::timer::SupportsBitmode;
 use crate::timer::Timer;
-use crate::uart::{Config, Instance as UarteInstance};
+use crate::uart::{Config, Instance as UartInstance};
 
 // Re-export SVD variants to allow user to directly set values
-pub use pac::uarte0::{baudrate::BAUDRATE_A as Baudrate, config::PARITY_A as Parity};
+pub use crate::uart::{Baudrate, Parity};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum RxState {
@@ -36,7 +35,7 @@ enum TxState {
     Transmitting(usize),
 }
 
-struct State<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> {
+struct State<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> {
     phantom: PhantomData<&'d mut U>,
     timer: Timer<'d, T, u16>,
     _ppi_ch1: Ppi<'d, AnyConfigurableChannel>,
@@ -59,11 +58,11 @@ struct State<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> {
 ///   are disabled before using `Uarte`. See product specification:
 ///     - nrf52832: Section 15.2
 ///     - nrf52840: Section 6.1.2
-pub struct BufferedUarte<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> {
+pub struct BufferedUart<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> {
     inner: PeripheralMutex<State<'d, U, T>>,
 }
 
-impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUarte<'d, U, T> {
+impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUart<'d, U, T> {
     /// unsafe: may not leak self or futures
     pub unsafe fn new(
         _uarte: impl Unborrow<Target = U> + 'd,
@@ -86,22 +85,34 @@ impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUart
         let mut timer: Timer<T, u16> = Timer::new_irqless(timer);
 
         rxd.conf().write(|w| w.input().connect().drive().h0h1());
+        #[cfg(not(feature = "nrf51"))]
         r.psel.rxd.write(|w| unsafe { w.bits(rxd.psel_bits()) });
+        #[cfg(feature = "nrf51")]
+        r.pselrxd.write(|w| unsafe { w.bits(rxd.psel_bits()) });
 
         txd.set_high();
         txd.conf().write(|w| w.dir().output().drive().h0h1());
+        #[cfg(not(feature = "nrf51"))]
         r.psel.txd.write(|w| unsafe { w.bits(txd.psel_bits()) });
+        #[cfg(feature = "nrf51")]
+        r.pseltxd.write(|w| unsafe { w.bits(txd.psel_bits()) });
 
         if let Some(pin) = rts.pin_mut() {
             pin.set_high();
             pin.conf().write(|w| w.dir().output().drive().h0h1());
         }
+        #[cfg(not(feature = "nrf51"))]
         r.psel.cts.write(|w| unsafe { w.bits(cts.psel_bits()) });
+        #[cfg(feature = "nrf51")]
+        r.pselcts.write(|w| unsafe { w.bits(cts.psel_bits()) });
 
         if let Some(pin) = cts.pin_mut() {
             pin.conf().write(|w| w.input().connect().drive().h0h1());
         }
+        #[cfg(not(feature = "nrf51"))]
         r.psel.rts.write(|w| unsafe { w.bits(rts.psel_bits()) });
+        #[cfg(feature = "nrf51")]
+        r.pselrts.write(|w| unsafe { w.bits(rts.psel_bits()) });
 
         r.baudrate.write(|w| w.baudrate().variant(config.baudrate));
         r.config.write(|w| w.parity().variant(config.parity));
@@ -120,7 +131,10 @@ impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUart
         r.baudrate.write(|w| w.baudrate().variant(config.baudrate));
 
         // Enable interrupts
+        #[cfg(not(feature = "nrf51"))]
         r.intenset.write(|w| w.endrx().set().endtx().set());
+        #[cfg(feature = "nrf51")]
+        r.intenset.write(|w| w.rxdrdy().set().txdrdy().set());
 
         // Disable the irq, let the Registration enable it when everything is set up.
         irq.disable();
@@ -145,6 +159,9 @@ impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUart
         let mut ppi_ch1 = Ppi::new(ppi_ch1.degrade_configurable());
         ppi_ch1.set_event(Event::from_reg(&r.events_rxdrdy));
         ppi_ch1.set_task(timer.task_clear());
+        // The nrf51's PPI has no fork tasks,
+        // so we instead just manually start the timer when the first `rxdrdy` of a reception occurs.
+        #[cfg(not(feature = "nrf51"))]
         ppi_ch1.set_fork_task(timer.task_start());
         ppi_ch1.enable();
 
@@ -153,7 +170,7 @@ impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUart
         ppi_ch2.set_task(Task::from_reg(&r.tasks_stoprx));
         ppi_ch2.enable();
 
-        BufferedUarte {
+        BufferedUart {
             inner: PeripheralMutex::new(
                 State {
                     phantom: PhantomData,
@@ -193,9 +210,9 @@ impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUart
     }
 }
 
-impl<'d, U, T> AsyncBufRead for BufferedUarte<'d, U, T>
+impl<'d, U, T> AsyncBufRead for BufferedUart<'d, U, T>
 where
-    U: UarteInstance,
+    U: UartInstance,
     T: TimerInstance + SupportsBitmode<u16>,
 {
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<&[u8]>> {
@@ -234,9 +251,9 @@ where
     }
 }
 
-impl<'d, U, T> AsyncWrite for BufferedUarte<'d, U, T>
+impl<'d, U, T> AsyncWrite for BufferedUart<'d, U, T>
 where
-    U: UarteInstance,
+    U: UartInstance,
     T: TimerInstance + SupportsBitmode<u16>,
 {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
@@ -270,32 +287,56 @@ where
     }
 }
 
-impl<'a, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> Drop for State<'a, U, T> {
+impl<'a, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> Drop for BufferedUart<'a, U, T> {
     fn drop(&mut self) {
         let r = U::regs();
 
-        // TODO this probably deadlocks. do like Uarte instead.
+        if self.inner.setup_done() {
+            // SAFETY: `self.inner.register_interrupt` requires `Pin<&mut Self>` to call,
+            // so it must be pinned already.
+            let mut inner = unsafe { Pin::new_unchecked(&mut self.inner) };
 
-        self.timer.stop();
-        if let RxState::Receiving = self.rx_state {
-            r.tasks_stoprx.write(|w| unsafe { w.bits(1) });
+            inner.as_mut().with(|state, _| {
+                state.timer.stop();
+
+                if state.rx_state == RxState::Receiving {
+                    r.tasks_stoprx.write(|w| unsafe { w.bits(1) });
+                }
+            });
+
+            r.intenset.write(|w| w.rxto().set());
+            low_power_wait_until(|| {
+                inner.as_mut().with(|state, _| {
+                    // If `register_interrupt` was called, we'll always have started RX at least once,
+                    // so we don't need to worry about `rxto` never happening.
+                    r.events_rxto.read().bits() != 0 && state.tx_state == TxState::Idle
+                })
+            });
         }
-        if let TxState::Transmitting(_) = self.tx_state {
-            r.tasks_stoptx.write(|w| unsafe { w.bits(1) });
+
+        r.enable.write(|w| w.enable().disabled());
+
+        #[cfg(not(feature = "nrf51"))]
+        {
+            gpio::deconfigure_pin(r.psel.rxd.read().bits());
+            gpio::deconfigure_pin(r.psel.txd.read().bits());
+            gpio::deconfigure_pin(r.psel.rts.read().bits());
+            gpio::deconfigure_pin(r.psel.cts.read().bits());
         }
-        if let RxState::Receiving = self.rx_state {
-            low_power_wait_until(|| r.events_endrx.read().bits() == 1);
-        }
-        if let TxState::Transmitting(_) = self.tx_state {
-            low_power_wait_until(|| r.events_endtx.read().bits() == 1);
+        #[cfg(feature = "nrf51")]
+        {
+            gpio::deconfigure_pin(r.pselrxd.read().bits());
+            gpio::deconfigure_pin(r.pseltxd.read().bits());
+            gpio::deconfigure_pin(r.pselrts.read().bits());
+            gpio::deconfigure_pin(r.pselcts.read().bits());
         }
     }
 }
 
 // SAFETY: the safety contract of `PeripheralStateUnchecked` is forwarded to `BufferedUarte::new`.
-impl<'a, U, T> PeripheralStateUnchecked for State<'a, U, T>
+unsafe impl<'a, U, T> PeripheralStateUnchecked for State<'a, U, T>
 where
-    U: UarteInstance,
+    U: UartInstance,
     T: TimerInstance + SupportsBitmode<u16>,
 {
     type Interrupt = U::Interrupt;
@@ -313,30 +354,62 @@ where
                         trace!("  irq_rx: starting {:?}", buf.len());
                         self.rx_state = RxState::Receiving;
 
-                        // Set up the DMA read
-                        r.rxd.ptr.write(|w|
-                            // The PTR field is a full 32 bits wide and accepts the full range
-                            // of values.
-                            unsafe { w.ptr().bits(buf.as_ptr() as u32) });
-                        r.rxd.maxcnt.write(|w|
-                            // We're giving it the length of the buffer, so no danger of
-                            // accessing invalid memory. We have verified that the length of the
-                            // buffer fits in an `u8`, so the cast to `u8` is also fine.
-                            //
-                            // The MAXCNT field is at least 8 bits wide and accepts the full
-                            // range of values.
-                            unsafe { w.maxcnt().bits(buf.len() as _) });
-                        trace!("  irq_rx: buf {:?} {:?}", buf.as_ptr() as u32, buf.len());
+                        #[cfg(not(feature = "nrf51"))]
+                        {
+                            // Set up the DMA read
+                            r.rxd.ptr.write(|w|
+                                // The PTR field is a full 32 bits wide and accepts the full range
+                                // of values.
+                                unsafe { w.ptr().bits(buf.as_ptr() as u32) });
+                            r.rxd.maxcnt.write(|w|
+                                // We're giving it the length of the buffer, so no danger of
+                                // accessing invalid memory. We have verified that the length of the
+                                // buffer fits in an `u8`, so the cast to `u8` is also fine.
+                                //
+                                // The MAXCNT field is at least 8 bits wide and accepts the full
+                                // range of values.
+                                unsafe { w.maxcnt().bits(buf.len() as _) });
+                            trace!("  irq_rx: buf {:?} {:?}", buf.as_ptr() as u32, buf.len());
+                        }
+
+                        // Only clear RXTO when we start RX, so that if RXTO has already occured when `BufferedUart` has dropped it remains triggered.
+                        r.events_rxto.reset();
 
                         // Start UARTE Receive transaction
                         r.tasks_startrx.write(|w|
                             // `1` is a valid value to write to task registers.
                             unsafe { w.bits(1) });
+
+                        #[cfg(feature = "nrf51")]
+                        // Drain any bytes which were already buffered in the FIFO.
+                        continue;
                     }
                     break;
                 }
                 RxState::Receiving => {
                     trace!("  irq_rx: in state receiving");
+                    #[cfg(feature = "nrf51")]
+                    // Make this a while loop to drain the FIFO when reception is restarted.
+                    while r.events_rxdrdy.read().bits() != 0 {
+                        // Start the idle timer if it hasn't been already.
+                        // There's no way to check if it's already running.
+                        self.timer.start();
+
+                        let buf = self.rx.push_buf();
+                        if let Some(byte) = buf.first_mut() {
+                            r.events_rxdrdy.reset();
+                            *byte = r.rxd.read().rxd().bits();
+                            self.rx.push(1);
+                            if self.rx.push_buf().is_empty() {
+                                r.tasks_stoprx.write(|w| unsafe { w.bits(1) });
+                                self.timer.stop();
+                                self.rx_waker.wake();
+                                self.rx_state = RxState::Idle;
+                                continue;
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "nrf51"))]
                     if r.events_endrx.read().bits() != 0 {
                         self.timer.stop();
 
@@ -348,9 +421,9 @@ where
 
                         self.rx_waker.wake();
                         self.rx_state = RxState::Idle;
-                    } else {
-                        break;
+                        continue;
                     }
+                    break;
                 }
             }
         }
@@ -360,33 +433,59 @@ where
                 TxState::Idle => {
                     trace!("  irq_tx: in state Idle");
                     let buf = self.tx.pop_buf();
-                    if !buf.is_empty() {
+                    #[allow(unused_variables)]
+                    if let Some(byte) = buf.first() {
                         trace!("  irq_tx: starting {:?}", buf.len());
                         self.tx_state = TxState::Transmitting(buf.len());
 
-                        // Set up the DMA write
-                        r.txd.ptr.write(|w|
-                            // The PTR field is a full 32 bits wide and accepts the full range
-                            // of values.
-                            unsafe { w.ptr().bits(buf.as_ptr() as u32) });
-                        r.txd.maxcnt.write(|w|
-                            // We're giving it the length of the buffer, so no danger of
-                            // accessing invalid memory. We have verified that the length of the
-                            // buffer fits in an `u8`, so the cast to `u8` is also fine.
-                            //
-                            // The MAXCNT field is 8 bits wide and accepts the full range of
-                            // values.
-                            unsafe { w.maxcnt().bits(buf.len() as _) });
+                        #[cfg(not(feature = "nrf51"))]
+                        {
+                            // Set up the DMA write
+                            r.txd.ptr.write(|w|
+                                // The PTR field is a full 32 bits wide and accepts the full range
+                                // of values.
+                                unsafe { w.ptr().bits(buf.as_ptr() as u32) });
+                            r.txd.maxcnt.write(|w|
+                                // We're giving it the length of the buffer, so no danger of
+                                // accessing invalid memory. We have verified that the length of the
+                                // buffer fits in an `u8`, so the cast to `u8` is also fine.
+                                //
+                                // The MAXCNT field is 8 bits wide and accepts the full range of
+                                // values.
+                                unsafe { w.maxcnt().bits(buf.len() as _) });
+                        }
 
                         // Start UARTE Transmit transaction
                         r.tasks_starttx.write(|w|
                             // `1` is a valid value to write to task registers.
                             unsafe { w.bits(1) });
+
+                        #[cfg(feature = "nrf51")]
+                        // Set the initial byte to transmit.
+                        {
+                            r.txd.write(|w| unsafe { w.txd().bits(*byte) });
+                            self.tx.pop(1);
+                        }
                     }
                     break;
                 }
+                #[allow(unused_variables)]
                 TxState::Transmitting(n) => {
                     trace!("  irq_tx: in state Transmitting");
+                    #[cfg(feature = "nrf51")]
+                    if r.events_txdrdy.read().bits() != 0 {
+                        r.events_txdrdy.reset();
+                        let buf = self.tx.pop_buf();
+                        if let Some(byte) = buf.first() {
+                            r.txd.write(|w| unsafe { w.txd().bits(*byte) });
+                            self.tx.pop(1);
+                        } else {
+                            self.tx_state = TxState::Idle;
+                            continue;
+                        }
+                    }
+
+                    #[cfg(not(feature = "nrf51"))]
                     if r.events_endtx.read().bits() != 0 {
                         r.events_endtx.reset();
 
@@ -394,12 +493,17 @@ where
                         self.tx.pop(n);
                         self.tx_waker.wake();
                         self.tx_state = TxState::Idle;
-                    } else {
-                        break;
+                        continue;
                     }
+                    break;
                 }
             }
         }
+
+        if r.events_rxto.read().bits() != 0 {
+            r.intenclr.write(|w| w.rxto().clear());
+        }
+
         trace!("irq: end");
     }
 }

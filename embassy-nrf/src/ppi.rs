@@ -27,6 +27,7 @@ pub struct Ppi<'d, C: Channel> {
 impl<'d, C: Channel> Ppi<'d, C> {
     pub fn new(ch: impl Unborrow<Target = C> + 'd) -> Self {
         unborrow!(ch);
+        #[allow(unused_mut)]
         let mut this = Self {
             ch,
             phantom: PhantomData,
