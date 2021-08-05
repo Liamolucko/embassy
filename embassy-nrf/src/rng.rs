@@ -12,9 +12,7 @@ use rand_core::RngCore;
 use crate::interrupt;
 use crate::pac;
 use crate::peripherals::RNG;
-use crate::util::irq_read;
-use crate::util::IrqIoState;
-use crate::util::IrqRead;
+use crate::util::io::{read, ByteRead, State};
 
 impl RNG {
     fn regs() -> &'static pac::rng::RegisterBlock {
@@ -22,7 +20,7 @@ impl RNG {
     }
 }
 
-static STATE: IrqIoState = IrqIoState::new();
+static STATE: State = State::new();
 
 /// A wrapper around an nRF RNG peripheral.
 ///
@@ -32,9 +30,9 @@ pub struct Rng<'d> {
     phantom: PhantomData<(&'d mut RNG, &'d mut interrupt::RNG)>,
 }
 
-impl<'d> IrqRead for Rng<'d> {
+impl<'d> ByteRead for Rng<'d> {
     #[inline]
-    fn state() -> &'static crate::util::IrqIoState {
+    fn state() -> &'static crate::util::io::State {
         &STATE
     }
 
@@ -132,7 +130,7 @@ impl<'d> traits::rng::Rng for Rng<'d> {
     #[inline]
     fn fill_bytes<'a>(&'a mut self, dest: &'a mut [u8]) -> Self::RngFuture<'a> {
         // SAFETY: `irq_read`'s safety contract is forwarded to `Rng::new`.
-        unsafe { irq_read(self, dest) }.map(|_| Ok(()))
+        unsafe { read(self, dest) }.map(|_| Ok(()))
     }
 }
 

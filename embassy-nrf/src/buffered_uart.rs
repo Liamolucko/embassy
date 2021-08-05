@@ -64,8 +64,10 @@ pub struct BufferedUart<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<
     inner: PeripheralMutex<'d, StateInner<'d, U, T>>,
 }
 
-impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> Unpin
-    for BufferedUart<'d, U, T>
+impl<'d, U, T> Unpin for BufferedUart<'d, U, T>
+where
+    U: UartInstance,
+    T: TimerInstance + SupportsBitmode<u16>,
 {
 }
 
@@ -375,7 +377,7 @@ where
                             trace!("  irq_rx: buf {:?} {:?}", buf.as_ptr() as u32, buf.len());
                         }
 
-                        // Only clear RXTO when we start RX, so that if RXTO has already occured when `BufferedUart` has dropped it remains triggered.
+                        // Only clear RXTO when we start RX, so that if RXTO has already occured when `BufferedUart` is dropped it remains triggered.
                         r.events_rxto.reset();
 
                         // Start UARTE Receive transaction
@@ -386,7 +388,7 @@ where
                         #[cfg(feature = "nrf51")]
                         {
                             // There's no ENDRX on the nrf51,
-                            // so the only way we can trigger the interrupt idle timer triggered STOPRX
+                            // so the only way we can tell if the interrupt idle timer triggered STOPRX
                             // is by using RXTO.
                             // We want to leave the event set after reception is finished though,
                             // so that we can check for it in the destructor.

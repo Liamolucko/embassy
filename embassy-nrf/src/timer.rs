@@ -33,17 +33,13 @@ pub(crate) mod sealed {
     }
     pub trait ExtendedInstance {}
 
-    pub trait SupportsBitmode<T>
-    where
-        T: Bitmode,
-    {
-    }
+    pub trait SupportsBitmode<T: Bitmode> {}
 }
 
 pub trait SupportsBitmode<T: Bitmode>: sealed::SupportsBitmode<T> {}
 
 pub trait Instance:
-    Unborrow<Target = Self> + sealed::Instance + SupportsBitmode<Self::MaxBitmode> + 'static + Send
+    Unborrow<Target = Self> + sealed::Instance + 'static + Send + SupportsBitmode<Self::MaxBitmode>
 {
     type MaxBitmode: Bitmode;
     type Interrupt: Interrupt;
@@ -141,18 +137,16 @@ impl Bitmode for u32 {
 /// or trigger an event when the counter reaches a certain value.
 pub struct Timer<'d, T, B = <T as Instance>::MaxBitmode>
 where
-    T: Instance,
     B: Bitmode,
-    T: SupportsBitmode<B>,
+    T: Instance + SupportsBitmode<B>,
 {
     phantom: PhantomData<(&'d mut T, B)>,
 }
 
 impl<'d, T, B> Timer<'d, T, B>
 where
-    T: Instance,
     B: Bitmode,
-    T: SupportsBitmode<B>,
+    T: Instance + SupportsBitmode<B>,
 {
     pub fn new(
         timer: impl Unborrow<Target = T> + 'd,
@@ -296,9 +290,8 @@ where
 /// When the register's CAPTURE task is triggered, the timer will store the current value of its counter in the register
 pub struct Cc<'a, T, B>
 where
-    T: Instance,
     B: Bitmode,
-    T: SupportsBitmode<B>,
+    T: Instance + SupportsBitmode<B>,
 {
     n: usize,
     phantom: PhantomData<(&'a mut T, B)>,
@@ -306,9 +299,8 @@ where
 
 impl<'a, T, B> Cc<'a, T, B>
 where
-    T: Instance,
     B: Bitmode,
-    T: SupportsBitmode<B>,
+    T: Instance + SupportsBitmode<B>,
 {
     /// Get the current value stored in the register.
     pub fn read(&self) -> B {

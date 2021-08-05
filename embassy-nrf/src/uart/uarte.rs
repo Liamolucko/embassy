@@ -345,8 +345,10 @@ impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> UarteWithIdle<'d,
     }
 }
 
-impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> ReadUntilIdle
-    for UarteWithIdle<'d, U, T>
+impl<'d, U, T> ReadUntilIdle for UarteWithIdle<'d, U, T>
+where
+    U: Instance,
+    T: TimerInstance + SupportsBitmode<u16>,
 {
     #[rustfmt::skip]
     type ReadUntilIdleFuture<'a> where Self: 'a = impl Future<Output = Result<usize, Error>> + 'a;

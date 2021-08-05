@@ -1,6 +1,6 @@
 pub use nrf51 as pac;
 
-embassy_extras::peripherals! {
+embassy_hal_common::peripherals! {
     // RTC
     RTC0,
     RTC1,

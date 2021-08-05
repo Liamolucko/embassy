@@ -7,22 +7,16 @@ use embassy::interrupt::Interrupt;
 use embassy::interrupt::InterruptExt;
 use embassy::traits::uart;
 use embassy::util::Unborrow;
-use embassy_extras::unborrow;
+use embassy_hal_common::unborrow;
 use futures::FutureExt;
 
-use crate::gpio;
 use crate::gpio::sealed::Pin;
-use crate::gpio::OptionalPin as GpioOptionalPin;
-use crate::gpio::Pin as GpioPin;
+use crate::gpio::{self, OptionalPin as GpioOptionalPin, Pin as GpioPin};
 use crate::pac;
-use crate::util::irq_read;
-use crate::util::irq_write;
-use crate::util::IrqRead;
-use crate::util::IrqWrite;
+use crate::util::io::{read, write, ByteRead, ByteWrite};
 
 // Re-export SVD variants to allow user to directly set values.
-pub use pac::uart0::baudrate::BAUDRATE_A as Baudrate;
-pub use pac::uart0::config::PARITY_A as Parity;
+pub use pac::uart0::{baudrate::BAUDRATE_A as Baudrate, config::PARITY_A as Parity};
 
 use super::Config;
 
@@ -109,11 +103,11 @@ impl<'d, T: Instance> Uart<'d, T> {
 
         if r.events_rxdrdy.read().bits() != 0 {
             // Defer to `IrqRead` (it handles clearing the event).
-            <Self as IrqRead>::on_irq();
+            <Self as ByteRead>::on_irq();
         }
 
         if r.events_txdrdy.read().bits() != 0 {
-            <Self as IrqWrite>::on_irq();
+            <Self as ByteWrite>::on_irq();
         }
 
         // This interrupt is just enabled to wake the CPU from WFE,
@@ -153,9 +147,9 @@ impl<'a, T: Instance> Drop for Uart<'a, T> {
     }
 }
 
-impl<'d, T: Instance> IrqRead for Uart<'d, T> {
+impl<'d, T: Instance> ByteRead for Uart<'d, T> {
     #[inline]
-    fn state() -> &'static crate::util::IrqIoState {
+    fn state() -> &'static crate::util::io::State {
         T::rx_state()
     }
 
@@ -197,13 +191,13 @@ impl<'d, T: Instance> uart::Read for Uart<'d, T> {
     #[inline]
     fn read<'a>(&'a mut self, buf: &'a mut [u8]) -> Self::ReadFuture<'a> {
         // SAFETY: The safety contract of `irq_read` is forwarded to `Uart::new`.
-        unsafe { irq_read(self, buf) }.map(|_| Ok(()))
+        unsafe { read(self, buf) }.map(|_| Ok(()))
     }
 }
 
-impl<'d, T: Instance> IrqWrite for Uart<'d, T> {
+impl<'d, T: Instance> ByteWrite for Uart<'d, T> {
     #[inline]
-    fn state() -> &'static crate::util::IrqIoState {
+    fn state() -> &'static crate::util::io::State {
         T::tx_state()
     }
 
@@ -245,28 +239,28 @@ impl<'d, T: Instance> IrqWrite for Uart<'d, T> {
 
 impl<'d, T: Instance> uart::Write for Uart<'d, T> {
     #[rustfmt::skip]
-    type WriteFuture<'a> where 'd: 'a = impl Future<Output = Result<(), uart::Error>>;
+    type WriteFuture<'a> where Self: 'a = impl Future<Output = Result<(), uart::Error>> + 'a;
 
     #[inline]
     fn write<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteFuture<'a> {
         // SAFETY: `irq_write`'s safety contract is forwarded to `Uart::new`.
-        unsafe { irq_write(self, buf) }.map(|_| Ok(()))
+        unsafe { write(self, buf) }.map(|_| Ok(()))
     }
 }
 
 pub(crate) mod sealed {
-    use crate::util::IrqIoState;
+    use crate::util::io::State;
 
     use super::*;
 
     pub trait Instance {
         fn regs() -> &'static pac::uart0::RegisterBlock;
-        fn rx_state() -> &'static IrqIoState;
-        fn tx_state() -> &'static IrqIoState;
+        fn rx_state() -> &'static State;
+        fn tx_state() -> &'static State;
     }
 }
 
-pub trait Instance: Unborrow<Target = Self> + sealed::Instance + 'static {
+pub trait Instance: Unborrow<Target = Self> + sealed::Instance + 'static + Send {
     type Interrupt: Interrupt;
 }
 
@@ -276,12 +270,12 @@ macro_rules! impl_uart {
             fn regs() -> &'static pac::uart0::RegisterBlock {
                 unsafe { &*pac::$pac_type::ptr() }
             }
-            fn rx_state() -> &'static crate::util::IrqIoState {
-                static STATE: crate::util::IrqIoState = crate::util::IrqIoState::new();
+            fn rx_state() -> &'static crate::util::io::State {
+                static STATE: crate::util::io::State = crate::util::io::State::new();
                 &STATE
             }
-            fn tx_state() -> &'static crate::util::IrqIoState {
-                static STATE: crate::util::IrqIoState = crate::util::IrqIoState::new();
+            fn tx_state() -> &'static crate::util::io::State {
+                static STATE: crate::util::io::State = crate::util::io::State::new();
                 &STATE
             }
         }

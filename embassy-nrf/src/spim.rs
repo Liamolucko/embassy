@@ -15,7 +15,8 @@ use crate::gpio;
 use crate::gpio::sealed::Pin as _;
 use crate::gpio::{OptionalPin, Pin as GpioPin};
 use crate::interrupt::Interrupt;
-use crate::{pac, util::slice_in_ram_or};
+use crate::pac;
+use crate::util::dma::slice_in_ram_or;
 
 pub use embedded_hal::spi::{Mode, Phase, Polarity, MODE_0, MODE_1, MODE_2, MODE_3};
 pub use pac::spim0::frequency::FREQUENCY_A as Frequency;
