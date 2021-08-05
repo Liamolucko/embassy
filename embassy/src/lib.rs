@@ -4,8 +4,6 @@
 #![feature(const_fn_fn_ptr_basics)]
 #![feature(const_option)]
 #![allow(incomplete_features)]
-#![feature(min_type_alias_impl_trait)]
-#![feature(impl_trait_in_bindings)]
 #![feature(type_alias_impl_trait)]
 
 // This mod MUST go first, so that the others see its macros.
@@ -14,6 +12,7 @@ pub(crate) mod fmt;
 pub mod executor;
 pub mod interrupt;
 pub mod io;
+#[cfg(feature = "time")]
 pub mod time;
 pub mod util;
 

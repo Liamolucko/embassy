@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
 use embassy::util::Unborrow;
-use embassy_extras::unborrow;
+use embassy_hal_common::unborrow;
 use embedded_hal::blocking::spi as eh;
 use embedded_hal::spi as ehnb;
 
@@ -33,6 +33,33 @@ pub struct Spi<'d, T: Instance> {
     phantom: PhantomData<&'d mut T>,
 }
 
+fn div_roundup(a: u32, b: u32) -> u32 {
+    (a + b - 1) / b
+}
+
+fn calc_prescs(freq: u32) -> (u8, u8) {
+    let clk_peri = crate::clocks::clk_peri_freq();
+
+    // final SPI frequency: spi_freq = clk_peri / presc / postdiv
+    // presc must be in 2..=254, and must be even
+    // postdiv must be in 1..=256
+
+    // divide extra by 2, so we get rid of the "presc must be even" requirement
+    let ratio = div_roundup(clk_peri, freq * 2);
+    if ratio > 127 * 256 {
+        panic!("Requested too low SPI frequency");
+    }
+
+    let presc = div_roundup(ratio, 256);
+    let postdiv = if presc == 1 {
+        ratio
+    } else {
+        div_roundup(ratio, presc)
+    };
+
+    ((presc * 2) as u8, (postdiv - 1) as u8)
+}
+
 impl<'d, T: Instance> Spi<'d, T> {
     pub fn new(
         inner: impl Unborrow<Target = T>,
@@ -46,41 +73,18 @@ impl<'d, T: Instance> Spi<'d, T> {
 
         unsafe {
             let p = inner.regs();
+            let (presc, postdiv) = calc_prescs(config.frequency);
 
-            let clk_peri = crate::clocks::clk_peri_freq();
-            assert!(config.frequency <= clk_peri);
-
-            // TODO replace these trial-and-error loops with decent calculations.
-
-            // Find smallest prescale value which puts output frequency in range of
-            // post-divide. Prescale is an even number from 2 to 254 inclusive.
-            let presc = (2u32..=254).step_by(2).find(|&presc| {
-                (clk_peri as u64) < (presc as u64 + 2) * 256 * config.frequency as u64
-            });
-
-            // if this fails, frequency is too low.
-            let presc = unwrap!(presc);
-
-            // Find largest post-divide which makes output <= baudrate. Post-divide is
-            // an integer in the range 1 to 256 inclusive.
-            // TODO figure what's up with postdiv=1, it is dividing by 0. Iterate down to 2 for now.
-            let postdiv = (2u32..=256)
-                .rev()
-                .find(|&postdiv| clk_peri / (presc * (postdiv - 1)) > config.frequency);
-            let postdiv = unwrap!(postdiv);
-
-            p.cpsr().write(|w| w.set_cpsdvsr(presc as _));
+            p.cpsr().write(|w| w.set_cpsdvsr(presc));
             p.cr0().write(|w| {
                 w.set_dss(0b0111); // 8bit
                 w.set_spo(config.polarity == ehnb::Polarity::IdleHigh);
                 w.set_sph(config.phase == ehnb::Phase::CaptureOnSecondTransition);
-                w.set_scr((postdiv - 1) as u8);
+                w.set_scr(postdiv);
             });
             p.cr1().write(|w| {
                 w.set_sse(true); // enable
             });
-
-            info!("SPI freq: {=u32}", clk_peri / (presc * postdiv));
 
             if let Some(pin) = clk.pin_mut() {
                 pin.io().ctrl().write(|w| w.set_funcsel(1));
@@ -107,6 +111,8 @@ impl<'d, T: Instance> Spi<'d, T> {
             for &b in data {
                 while !p.sr().read().tnf() {}
                 p.dr().write(|w| w.set_data(b as _));
+                while !p.sr().read().rne() {}
+                let _ = p.dr().read();
             }
             self.flush();
         }
@@ -129,6 +135,24 @@ impl<'d, T: Instance> Spi<'d, T> {
         unsafe {
             let p = self.inner.regs();
             while p.sr().read().bsy() {}
+        }
+    }
+
+    pub fn set_frequency(&mut self, freq: u32) {
+        let (presc, postdiv) = calc_prescs(freq);
+        let p = self.inner.regs();
+        unsafe {
+            // disable
+            p.cr1().write(|w| w.set_sse(false));
+
+            // change stuff
+            p.cpsr().write(|w| w.set_cpsdvsr(presc));
+            p.cr0().modify(|w| {
+                w.set_scr(postdiv);
+            });
+
+            // enable
+            p.cr1().write(|w| w.set_sse(true));
         }
     }
 }

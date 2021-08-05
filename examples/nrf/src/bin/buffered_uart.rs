@@ -1,7 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(min_type_alias_impl_trait)]
-#![feature(impl_trait_in_bindings)]
 #![feature(type_alias_impl_trait)]
 #![allow(incomplete_features)]
 
@@ -11,8 +9,9 @@ mod example_common;
 use defmt::panic;
 use embassy::executor::Spawner;
 use embassy::io::{AsyncBufReadExt, AsyncWriteExt};
+use embassy_nrf::buffered_uart::{BufferedUart, State};
 use embassy_nrf::gpio::NoPin;
-use embassy_nrf::{buffered_uart::BufferedUart, interrupt, uart, Peripherals};
+use embassy_nrf::{interrupt, uart, Peripherals};
 use example_common::*;
 use futures::pin_mut;
 
@@ -26,8 +25,10 @@ async fn main(_spawner: Spawner, p: Peripherals) {
     let mut rx_buffer = [0u8; 4096];
 
     let irq = interrupt::take!(UARTE0_UART0);
+    let mut state = State::new();
     let u = unsafe {
         BufferedUart::new(
+            &mut state,
             p.UARTE0,
             p.TIMER0,
             p.PPI_CH0,

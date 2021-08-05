@@ -27,7 +27,13 @@ pub struct Clocks {
     pub ahb3: Hertz,
 
     #[cfg(any(rcc_h7))]
+    pub ahb4: Hertz,
+
+    #[cfg(any(rcc_h7))]
     pub apb4: Hertz,
+
+    #[cfg(rcc_f4)]
+    pub pll48: Option<Hertz>,
 }
 
 /// Frozen clock frequencies
@@ -116,6 +122,35 @@ crate::pac::peripheral_rcc!(
                     }
                 })
             }
+        }
+
+        impl RccPeripheral for peripherals::$inst {}
+    };
+    ($inst:ident, $clk:ident, $enable:ident, $perien:ident) => {
+        impl sealed::RccPeripheral for peripherals::$inst {
+            fn frequency() -> crate::time::Hertz {
+                critical_section::with(|_| {
+                    unsafe {
+                        let freqs = get_freqs();
+                        freqs.$clk
+                    }
+                })
+            }
+            fn enable() {
+                critical_section::with(|_| {
+                    unsafe {
+                        crate::pac::RCC.$enable().modify(|w| w.$perien(true));
+                    }
+                })
+            }
+            fn disable() {
+                critical_section::with(|_| {
+                    unsafe {
+                        crate::pac::RCC.$enable().modify(|w| w.$perien(false));
+                    }
+                })
+            }
+            fn reset() {}
         }
 
         impl RccPeripheral for peripherals::$inst {}

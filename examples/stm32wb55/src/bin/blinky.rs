@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(trait_alias)]
-#![feature(min_type_alias_impl_trait)]
-#![feature(impl_trait_in_bindings)]
 #![feature(type_alias_impl_trait)]
 #![allow(incomplete_features)]
 
@@ -13,18 +11,10 @@ use embedded_hal::digital::v2::OutputPin;
 use example_common::*;
 
 use cortex_m_rt::entry;
-use stm32wb_pac as pac;
 
 #[entry]
 fn main() -> ! {
     info!("Hello World!");
-
-    let pp = pac::Peripherals::take().unwrap();
-
-    pp.RCC.ahb2enr.modify(|_, w| {
-        w.gpioben().set_bit();
-        w
-    });
 
     let p = embassy_stm32::init(Default::default());
 

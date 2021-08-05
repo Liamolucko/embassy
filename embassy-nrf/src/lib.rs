@@ -1,8 +1,6 @@
 #![no_std]
 #![feature(generic_associated_types)]
 #![feature(asm)]
-#![feature(min_type_alias_impl_trait)]
-#![feature(impl_trait_in_bindings)]
 #![feature(type_alias_impl_trait)]
 #![allow(incomplete_features)]
 
@@ -70,14 +68,18 @@ mod chip;
 #[path = "chips/nrf52840.rs"]
 mod chip;
 
+#[cfg(feature = "unstable-pac")]
+pub use chip::pac;
+#[cfg(not(feature = "unstable-pac"))]
 pub(crate) use chip::pac;
+
 pub use chip::{peripherals, Peripherals};
 
 pub mod interrupt {
     pub use crate::chip::irqs::*;
     pub use cortex_m::interrupt::{CriticalSection, Mutex};
     pub use embassy::interrupt::{declare, take, Interrupt};
-    pub use embassy_extras::interrupt::Priority3 as Priority;
+    pub use embassy_hal_common::interrupt::Priority3 as Priority;
 }
 pub use embassy_macros::interrupt;
 

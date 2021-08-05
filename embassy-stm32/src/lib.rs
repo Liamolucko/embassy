@@ -1,11 +1,12 @@
 #![no_std]
 #![feature(generic_associated_types)]
 #![feature(asm)]
-#![feature(min_type_alias_impl_trait)]
-#![feature(impl_trait_in_bindings)]
 #![feature(type_alias_impl_trait)]
 #![allow(incomplete_features)]
 
+#[cfg(feature = "unstable-pac")]
+pub use stm32_metapac as pac;
+#[cfg(not(feature = "unstable-pac"))]
 pub(crate) use stm32_metapac as pac;
 
 // This must go FIRST so that all the other modules see its macros.
@@ -16,24 +17,27 @@ pub mod interrupt;
 pub mod time;
 
 // Always-present hardware
+pub mod dma;
 pub mod gpio;
 pub mod rcc;
 
 // Sometimes-present hardware
+
 #[cfg(adc)]
 pub mod adc;
 #[cfg(timer)]
 pub mod clock;
 #[cfg(dac)]
 pub mod dac;
-#[cfg(any(dma, dmamux))]
-pub mod dma;
+#[cfg(dbgmcu)]
+pub mod dbgmcu;
 #[cfg(all(eth, feature = "net"))]
 pub mod eth;
 #[cfg(exti)]
 pub mod exti;
 #[cfg(i2c)]
 pub mod i2c;
+
 #[cfg(pwr)]
 pub mod pwr;
 #[cfg(rng)]
@@ -61,14 +65,7 @@ pub use generated::{peripherals, Peripherals};
 
 #[non_exhaustive]
 pub struct Config {
-    rcc: rcc::Config,
-}
-
-impl Config {
-    pub fn rcc(mut self, rcc: rcc::Config) -> Self {
-        self.rcc = rcc;
-        self
-    }
+    pub rcc: rcc::Config,
 }
 
 impl Default for Config {
@@ -84,10 +81,11 @@ pub fn init(config: Config) -> Peripherals {
     let p = Peripherals::take();
 
     unsafe {
-        #[cfg(dma)]
+        gpio::init();
         dma::init();
         #[cfg(exti)]
         exti::init();
+
         rcc::init(config.rcc);
     }
 

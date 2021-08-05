@@ -6,7 +6,7 @@ use crate::time::Hertz;
 use crate::time::U32Ext;
 use core::marker::PhantomData;
 use embassy::util::Unborrow;
-use embassy_extras::unborrow;
+use embassy_hal_common::unborrow;
 
 /// Most of clock setup is copied from stm32l0xx-hal, and adopted to the generated PAC,
 /// and with the addition of the init function to configure a system clock.
@@ -122,11 +122,7 @@ impl<'d> Rcc<'d> {
         unsafe {
             pac::RCC.ahb1enr().modify(|w| w.set_dma1en(enable_dma));
 
-            pac::DBGMCU.cr().modify(|w| {
-                w.set_dbg_sleep(true);
-                w.set_dbg_standby(true);
-                w.set_dbg_stop(true);
-            });
+            Dbgmcu::enable_all();
         }
     }
 }

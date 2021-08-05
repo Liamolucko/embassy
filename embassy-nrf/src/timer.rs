@@ -10,7 +10,7 @@ use embassy::interrupt::Interrupt;
 use embassy::interrupt::InterruptExt;
 use embassy::util::OnDrop;
 use embassy::util::Unborrow;
-use embassy_extras::unborrow;
+use embassy_hal_common::unborrow;
 use futures::future::poll_fn;
 use pac::timer0::bitmode;
 use pac::timer0::bitmode::BITMODE_W;
@@ -43,7 +43,7 @@ pub(crate) mod sealed {
 pub trait SupportsBitmode<T: Bitmode>: sealed::SupportsBitmode<T> {}
 
 pub trait Instance:
-    Unborrow<Target = Self> + sealed::Instance + SupportsBitmode<Self::MaxBitmode> + 'static
+    Unborrow<Target = Self> + sealed::Instance + SupportsBitmode<Self::MaxBitmode> + 'static + Send
 {
     type MaxBitmode: Bitmode;
     type Interrupt: Interrupt;

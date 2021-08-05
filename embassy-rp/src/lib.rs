@@ -5,22 +5,27 @@
 #![feature(never_type)]
 #![allow(incomplete_features)]
 
+#[cfg(feature = "unstable-pac")]
 pub use rp2040_pac2 as pac;
+#[cfg(not(feature = "unstable-pac"))]
+pub(crate) use rp2040_pac2 as pac;
 
 // This mod MUST go first, so that the others see its macros.
 pub(crate) mod fmt;
 
 pub mod interrupt;
+pub use embassy_macros::interrupt;
 
 pub mod dma;
 pub mod gpio;
 pub mod spi;
+pub mod timer;
 pub mod uart;
 
 mod clocks;
 mod reset;
 
-embassy_extras::peripherals! {
+embassy_hal_common::peripherals! {
     PIN_0,
     PIN_1,
     PIN_2,
@@ -64,6 +69,11 @@ embassy_extras::peripherals! {
     SPI0,
     SPI1,
 
+    TIMER_ALARM0,
+    TIMER_ALARM1,
+    TIMER_ALARM2,
+    TIMER_ALARM3,
+
     DMA_CH0,
     DMA_CH1,
     DMA_CH2,
@@ -100,6 +110,7 @@ pub fn init(_config: config::Config) -> Peripherals {
 
     unsafe {
         clocks::init();
+        timer::init();
     }
 
     peripherals

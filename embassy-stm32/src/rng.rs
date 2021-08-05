@@ -4,7 +4,7 @@ use core::future::Future;
 use core::task::Poll;
 use embassy::traits;
 use embassy::util::{AtomicWaker, Unborrow};
-use embassy_extras::unborrow;
+use embassy_hal_common::unborrow;
 use futures::future::poll_fn;
 use rand_core::{CryptoRng, RngCore};
 
@@ -84,7 +84,7 @@ impl<T: Instance> CryptoRng for Random<T> {}
 impl<T: Instance> traits::rng::Rng for Random<T> {
     type Error = Error;
     #[rustfmt::skip]
-    type RngFuture<'a> where Self: 'a = impl Future<Output=Result<(), Self::Error>>;
+    type RngFuture<'a> where Self: 'a = impl Future<Output=Result<(), Self::Error>> + 'a;
 
     fn fill_bytes<'a>(&'a mut self, dest: &'a mut [u8]) -> Self::RngFuture<'a> {
         unsafe {

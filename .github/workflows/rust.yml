@@ -88,6 +88,8 @@ jobs:
             target: thumbv6m-none-eabi
           - package: examples/stm32wb55
             target: thumbv7em-none-eabihf
+          - package: examples/stm32f0
+            target: thumbv6m-none-eabi
 
     steps:
       - uses: actions/checkout@v2
@@ -120,7 +122,17 @@ jobs:
         with:
           toolchain: stable
       - name: Check fmt
-        run: for i in embassy-*; do (cd $i; cargo fmt -- --check); done
+        run: find -name '*.rs' | xargs rustfmt --check  --skip-children --unstable-features --edition 2018
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: Test
+        run: cd embassy && cargo test
 
   metapac_gen:
     runs-on: ubuntu-latest
@@ -132,4 +144,4 @@ jobs:
         with:
           toolchain: stable
       - name: Generate pregenerated metapac
-        run: cd stm32-metapac/gen; cargo run --release
+        run: cd stm32-metapac-gen; cargo run --release

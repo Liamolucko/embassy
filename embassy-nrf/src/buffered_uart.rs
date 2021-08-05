@@ -7,9 +7,9 @@ use core::task::{Context, Poll};
 use embassy::interrupt::InterruptExt;
 use embassy::io::{AsyncBufRead, AsyncWrite, Result};
 use embassy::util::{Unborrow, WakerRegistration};
-use embassy_extras::peripheral::{PeripheralMutex, PeripheralStateUnchecked};
-use embassy_extras::ring_buffer::RingBuffer;
-use embassy_extras::{low_power_wait_until, unborrow};
+use embassy_hal_common::peripheral::{PeripheralMutex, PeripheralState, StateStorage};
+use embassy_hal_common::ring_buffer::RingBuffer;
+use embassy_hal_common::{low_power_wait_until, unborrow};
 
 use crate::gpio::sealed::Pin as _;
 use crate::gpio::{self, OptionalPin as GpioOptionalPin, Pin as GpioPin};
@@ -35,7 +35,16 @@ enum TxState {
     Transmitting(usize),
 }
 
-struct State<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> {
+pub struct State<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>>(
+    StateStorage<StateInner<'d, U, T>>,
+);
+impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> State<'d, U, T> {
+    pub fn new() -> Self {
+        Self(StateStorage::new())
+    }
+}
+
+struct StateInner<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> {
     phantom: PhantomData<&'d mut U>,
     timer: Timer<'d, T, u16>,
     _ppi_ch1: Ppi<'d, AnyConfigurableChannel>,
@@ -51,20 +60,19 @@ struct State<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> {
 }
 
 /// Interface to a UARTE instance
-///
-/// This is a very basic interface that comes with the following limitations:
-/// - The UARTE instances share the same address space with instances of UART.
-///   You need to make sure that conflicting instances
-///   are disabled before using `Uarte`. See product specification:
-///     - nrf52832: Section 15.2
-///     - nrf52840: Section 6.1.2
 pub struct BufferedUart<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> {
-    inner: PeripheralMutex<State<'d, U, T>>,
+    inner: PeripheralMutex<'d, StateInner<'d, U, T>>,
+}
+
+impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> Unpin
+    for BufferedUart<'d, U, T>
+{
 }
 
 impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUart<'d, U, T> {
     /// unsafe: may not leak self or futures
     pub unsafe fn new(
+        state: &'d mut State<'d, U, T>,
         _uarte: impl Unborrow<Target = U> + 'd,
         timer: impl Unborrow<Target = T> + 'd,
         ppi_ch1: impl Unborrow<Target = impl ConfigurableChannel> + 'd,
@@ -170,31 +178,26 @@ impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUart<
         ppi_ch2.set_task(Task::from_reg(&r.tasks_stoprx));
         ppi_ch2.enable();
 
-        BufferedUart {
-            inner: PeripheralMutex::new(
-                State {
-                    phantom: PhantomData,
-                    timer,
-                    _ppi_ch1: ppi_ch1,
-                    _ppi_ch2: ppi_ch2,
+        Self {
+            inner: PeripheralMutex::new_unchecked(irq, &mut state.0, move || StateInner {
+                phantom: PhantomData,
+                timer,
+                _ppi_ch1: ppi_ch1,
+                _ppi_ch2: ppi_ch2,
 
-                    rx: RingBuffer::new(rx_buffer),
-                    rx_state: RxState::Idle,
-                    rx_waker: WakerRegistration::new(),
+                rx: RingBuffer::new(rx_buffer),
+                rx_state: RxState::Idle,
+                rx_waker: WakerRegistration::new(),
 
-                    tx: RingBuffer::new(tx_buffer),
-                    tx_state: TxState::Idle,
-                    tx_waker: WakerRegistration::new(),
-                },
-                irq,
-            ),
+                tx: RingBuffer::new(tx_buffer),
+                tx_state: TxState::Idle,
+                tx_waker: WakerRegistration::new(),
+            }),
         }
     }
 
-    pub fn set_baudrate(self: Pin<&mut Self>, baudrate: Baudrate) {
-        let mut inner = self.inner();
-        inner.as_mut().register_interrupt();
-        inner.with(|state, _irq| {
+    pub fn set_baudrate(&mut self, baudrate: Baudrate) {
+        self.inner.with(|state| {
             let r = U::regs();
 
             let timeout = (0x8000_0000 / (baudrate as u32 / 40)) as u16;
@@ -204,10 +207,6 @@ impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUart<
             r.baudrate.write(|w| w.baudrate().variant(baudrate));
         });
     }
-
-    fn inner(self: Pin<&mut Self>) -> Pin<&mut PeripheralMutex<State<'d, U, T>>> {
-        unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().inner) }
-    }
 }
 
 impl<'d, U, T> AsyncBufRead for BufferedUart<'d, U, T>
@@ -215,10 +214,8 @@ where
     U: UartInstance,
     T: TimerInstance + SupportsBitmode<u16>,
 {
-    fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<&[u8]>> {
-        let mut inner = self.inner();
-        inner.as_mut().register_interrupt();
-        inner.with(|state, _irq| {
+    fn poll_fill_buf(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<&[u8]>> {
+        self.inner.with(|state| {
             // Conservative compiler fence to prevent optimizations that do not
             // take in to account actions by DMA. The fence has been placed here,
             // before any DMA action has started
@@ -240,14 +237,12 @@ where
         })
     }
 
-    fn consume(self: Pin<&mut Self>, amt: usize) {
-        let mut inner = self.inner();
-        inner.as_mut().register_interrupt();
-        inner.with(|state, irq| {
+    fn consume(mut self: Pin<&mut Self>, amt: usize) {
+        self.inner.with(|state| {
             trace!("consume {:?}", amt);
             state.rx.pop(amt);
-            irq.pend();
-        })
+        });
+        self.inner.pend();
     }
 }
 
@@ -256,10 +251,12 @@ where
     U: UartInstance,
     T: TimerInstance + SupportsBitmode<u16>,
 {
-    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
-        let mut inner = self.inner();
-        inner.as_mut().register_interrupt();
-        inner.with(|state, irq| {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize>> {
+        let poll = self.inner.with(|state| {
             trace!("poll_write: {:?}", buf.len());
 
             let tx_buf = state.tx.push_buf();
@@ -280,10 +277,12 @@ where
             // before any DMA action has started
             compiler_fence(Ordering::SeqCst);
 
-            irq.pend();
-
             Poll::Ready(Ok(n))
-        })
+        });
+
+        self.inner.pend();
+
+        poll
     }
 }
 
@@ -291,37 +290,33 @@ impl<'a, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> Drop for Buff
     fn drop(&mut self) {
         let r = U::regs();
 
-        if self.inner.setup_done() {
-            // SAFETY: `self.inner.register_interrupt` requires `Pin<&mut Self>` to call,
-            // so it must be pinned already.
-            let mut inner = unsafe { Pin::new_unchecked(&mut self.inner) };
+        self.inner.with(|state| {
+            state.timer.stop();
 
-            inner.as_mut().with(|state, _| {
-                state.timer.stop();
+            if state.rx_state == RxState::Receiving {
+                r.tasks_stoprx.write(|w| unsafe { w.bits(1) });
 
-                if state.rx_state == RxState::Receiving {
-                    r.tasks_stoprx.write(|w| unsafe { w.bits(1) });
-
-                    // Mark the rx buffer as full so that we don't just immediately start recieving again.
-                    // We need to do it twice because `push_buf` only returns the first contiguous part of the buffer;
-                    // there can also be a second contiguous part after the buffer wraps around.
-                    for _ in 0..2 {
-                        let len = state.rx.push_buf().len();
-                        state.rx.push(len);
-                    }
+                // Mark the rx buffer as full so that we don't just immediately start recieving again.
+                // We need to do it twice because `push_buf` only returns the first contiguous part of the buffer;
+                // there can also be a second contiguous part after the buffer wraps around.
+                for _ in 0..2 {
+                    let len = state.rx.push_buf().len();
+                    state.rx.push(len);
                 }
-            });
+            }
+        });
 
-            #[cfg(not(feature = "nrf51"))]
-            r.intenset.write(|w| w.rxto().set());
-            low_power_wait_until(|| {
-                inner.as_mut().with(|state, _| {
-                    // If `register_interrupt` was called, we'll always have started RX at least once,
-                    // so we don't need to worry about `rxto` never happening.
-                    r.events_rxto.read().bits() != 0 && state.tx_state == TxState::Idle
-                })
-            });
-        }
+        #[cfg(not(feature = "nrf51"))]
+        r.intenset.write(|w| w.rxto().set());
+        low_power_wait_until(|| {
+            self.inner.with(|state| {
+                // The only way that we could have reached this point without the interrupt firing and starting at least one reception
+                // is if we were in a critical section all the way from construction to drop.
+                //
+                // If that's the case, the interrupt will never fire and this'll deadlock anyway, so it's not really a problem.
+                r.events_rxto.read().bits() != 0 && state.tx_state == TxState::Idle
+            })
+        });
 
         r.enable.write(|w| w.enable().disabled());
 
@@ -342,8 +337,7 @@ impl<'a, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> Drop for Buff
     }
 }
 
-// SAFETY: the safety contract of `PeripheralStateUnchecked` is forwarded to `BufferedUarte::new`.
-unsafe impl<'a, U, T> PeripheralStateUnchecked for State<'a, U, T>
+impl<'a, U, T> PeripheralState for StateInner<'a, U, T>
 where
     U: UartInstance,
     T: TimerInstance + SupportsBitmode<u16>,

@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 use embassy::interrupt::InterruptExt;
 use embassy::traits;
 use embassy::util::Unborrow;
-use embassy_extras::unborrow;
+use embassy_hal_common::unborrow;
 use futures::FutureExt;
 use rand_core::RngCore;
 

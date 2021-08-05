@@ -1,4 +1,5 @@
 pub use super::types::*;
+use crate::dbgmcu::Dbgmcu;
 use crate::pac;
 use crate::peripherals::{self, CRS, RCC, SYSCFG};
 use crate::rcc::{get_freqs, set_freqs, Clocks};
@@ -6,7 +7,7 @@ use crate::time::Hertz;
 use crate::time::U32Ext;
 use core::marker::PhantomData;
 use embassy::util::Unborrow;
-use embassy_extras::unborrow;
+use embassy_hal_common::unborrow;
 use pac::rcc::vals::{Hpre, Msirange, Plldiv, Pllmul, Pllsrc, Ppre, Sw};
 
 /// Most of clock setup is copied from stm32l0xx-hal, and adopted to the generated PAC,
@@ -170,13 +171,9 @@ impl<'d> Rcc<'d> {
     pub fn enable_debug_wfe(&mut self, _dbg: &mut peripherals::DBGMCU, enable_dma: bool) {
         // NOTE(unsafe) We have exclusive access to the RCC and DBGMCU
         unsafe {
-            pac::RCC.ahbenr().modify(|w| w.set_dmaen(enable_dma));
+            pac::RCC.ahbenr().modify(|w| w.set_dma1en(enable_dma));
 
-            pac::DBGMCU.cr().modify(|w| {
-                w.set_dbg_sleep(true);
-                w.set_dbg_standby(true);
-                w.set_dbg_stop(true);
-            });
+            Dbgmcu::enable_all();
         }
     }
 

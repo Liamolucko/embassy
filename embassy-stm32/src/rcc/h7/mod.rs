@@ -68,6 +68,7 @@ pub struct Config {
     pub pll1: PllConfig,
     pub pll2: PllConfig,
     pub pll3: PllConfig,
+    pub enable_dma1: bool,
 }
 
 pub struct Rcc<'d> {
@@ -325,6 +326,10 @@ impl<'d> Rcc<'d> {
             });
             while !SYSCFG.cccsr().read().ready() {}
 
+            if self.config.enable_dma1 {
+                RCC.ahb1enr().modify(|w| w.set_dma1en(true));
+            }
+
             CoreClocks {
                 hclk: Hertz(rcc_hclk),
                 pclk1: Hertz(rcc_pclk1),
@@ -532,6 +537,7 @@ pub unsafe fn init(config: Config) {
         ahb1: core_clocks.hclk,
         ahb2: core_clocks.hclk,
         ahb3: core_clocks.hclk,
+        ahb4: core_clocks.hclk,
         apb1: core_clocks.pclk1,
         apb2: core_clocks.pclk2,
         apb4: core_clocks.pclk4,

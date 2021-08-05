@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(trait_alias)]
-#![feature(min_type_alias_impl_trait)]
-#![feature(impl_trait_in_bindings)]
 #![feature(type_alias_impl_trait)]
 #![allow(incomplete_features)]
 
@@ -14,6 +12,7 @@ use embedded_hal::digital::v2::OutputPin;
 use example_common::*;
 
 use cortex_m_rt::entry;
+use embassy_stm32::dma::NoDma;
 use embassy_stm32::rcc;
 use embassy_stm32::spi::{Config, Spi};
 use embassy_stm32::time::Hertz;
@@ -21,7 +20,7 @@ use embedded_hal::blocking::spi::Transfer;
 
 #[entry]
 fn main() -> ! {
-    info!("Hello World, dude!");
+    info!("Hello World, folks!");
 
     let mut p = embassy_stm32::init(Default::default());
     let mut rcc = rcc::Rcc::new(p.RCC);
@@ -32,6 +31,8 @@ fn main() -> ! {
         p.PB3,
         p.PA7,
         p.PA6,
+        NoDma,
+        NoDma,
         Hertz(1_000_000),
         Config::default(),
     );
