@@ -22,6 +22,7 @@ use super::Config;
 
 /// Interface to the UART peripheral
 pub struct Uart<'d, T: Instance> {
+    irq: T::Interrupt,
     phantom: PhantomData<&'d mut T>,
 }
 
@@ -84,37 +85,12 @@ impl<'d, T: Instance> Uart<'d, T> {
         // Disable all interrupts
         r.intenclr.write(|w| unsafe { w.bits(0xFFFF_FFFF) });
 
-        irq.set_handler(Self::on_interrupt);
-        irq.unpend();
-        irq.enable();
-
         // Enable
         r.enable.write(|w| w.enable().enabled());
 
         Self {
+            irq,
             phantom: PhantomData,
-        }
-    }
-
-    fn on_interrupt(_: *mut ()) {
-        trace!("uart: interrupt fired");
-
-        let r = T::regs();
-
-        if r.events_rxdrdy.read().bits() != 0 {
-            // Defer to `IrqRead` (it handles clearing the event).
-            <Self as ByteRead>::on_irq();
-        }
-
-        if r.events_txdrdy.read().bits() != 0 {
-            <Self as ByteWrite>::on_irq();
-        }
-
-        // This interrupt is just enabled to wake the CPU from WFE,
-        // so we don't need to do anything other than disable the interrupt
-        // so it doesn't repeatedly fire.
-        if r.events_rxto.read().bits() != 0 {
-            r.intenclr.write(|w| w.rxto().clear());
         }
     }
 }
@@ -124,6 +100,12 @@ impl<'a, T: Instance> Drop for Uart<'a, T> {
         info!("uart drop");
 
         let r = T::regs();
+
+        // Set an interrupt handler which will just disable itself when RXTO is fired.
+        self.irq.set_handler(|_| {
+            let r = T::regs();
+            r.intenclr.write(|w| w.rxto().clear());
+        });
 
         // Wait for rxto, if needed.
         // (The interrupt firing will wake the CPU from WFE)
@@ -148,9 +130,11 @@ impl<'a, T: Instance> Drop for Uart<'a, T> {
 }
 
 impl<'d, T: Instance> ByteRead for Uart<'d, T> {
+    type Interrupt = T::Interrupt;
+
     #[inline]
-    fn state() -> &'static crate::util::io::State {
-        T::rx_state()
+    fn irq(&mut self) -> &mut Self::Interrupt {
+        &mut self.irq
     }
 
     #[inline]
@@ -159,7 +143,7 @@ impl<'d, T: Instance> ByteRead for Uart<'d, T> {
     }
 
     #[inline]
-    fn disable_irq() {
+    fn disable_irq(&self) {
         T::regs().intenclr.write(|w| w.rxdrdy().clear())
     }
 
@@ -174,12 +158,12 @@ impl<'d, T: Instance> ByteRead for Uart<'d, T> {
     }
 
     #[inline]
-    fn clear_event() {
+    fn clear_event(&self) {
         T::regs().events_rxdrdy.reset()
     }
 
     #[inline]
-    fn next_byte() -> u8 {
+    fn next_byte(&self) -> u8 {
         T::regs().rxd.read().rxd().bits()
     }
 }
@@ -196,9 +180,11 @@ impl<'d, T: Instance> uart::Read for Uart<'d, T> {
 }
 
 impl<'d, T: Instance> ByteWrite for Uart<'d, T> {
+    type Interrupt = T::Interrupt;
+
     #[inline]
-    fn state() -> &'static crate::util::io::State {
-        T::tx_state()
+    fn irq(&mut self) -> &mut Self::Interrupt {
+        &mut self.irq
     }
 
     #[inline]
@@ -207,7 +193,7 @@ impl<'d, T: Instance> ByteWrite for Uart<'d, T> {
     }
 
     #[inline]
-    fn disable_irq() {
+    fn disable_irq(&self) {
         T::regs().intenclr.write(|w| w.txdrdy().clear())
     }
 
@@ -227,12 +213,12 @@ impl<'d, T: Instance> ByteWrite for Uart<'d, T> {
     }
 
     #[inline]
-    fn clear_event() {
+    fn clear_event(&self) {
         T::regs().events_txdrdy.reset()
     }
 
     #[inline]
-    fn set_next_byte(byte: u8) {
+    fn set_next_byte(&self, byte: u8) {
         T::regs().txd.write(|w| unsafe { w.txd().bits(byte) })
     }
 }
@@ -249,19 +235,15 @@ impl<'d, T: Instance> uart::Write for Uart<'d, T> {
 }
 
 pub(crate) mod sealed {
-    use crate::util::io::State;
-
     use super::*;
 
     pub trait Instance {
         fn regs() -> &'static pac::uart0::RegisterBlock;
-        fn rx_state() -> &'static State;
-        fn tx_state() -> &'static State;
     }
 }
 
-pub trait Instance: Unborrow<Target = Self> + sealed::Instance + 'static + Send {
-    type Interrupt: Interrupt;
+pub trait Instance: Unborrow<Target = Self> + sealed::Instance + 'static + Send + Sync {
+    type Interrupt: Interrupt + Unpin + Sync;
 }
 
 macro_rules! impl_uart {
@@ -269,14 +251,6 @@ macro_rules! impl_uart {
         impl crate::uart::sealed::Instance for peripherals::$type {
             fn regs() -> &'static pac::uart0::RegisterBlock {
                 unsafe { &*pac::$pac_type::ptr() }
-            }
-            fn rx_state() -> &'static crate::util::io::State {
-                static STATE: crate::util::io::State = crate::util::io::State::new();
-                &STATE
-            }
-            fn tx_state() -> &'static crate::util::io::State {
-                static STATE: crate::util::io::State = crate::util::io::State::new();
-                &STATE
             }
         }
         impl crate::uart::Instance for peripherals::$type {

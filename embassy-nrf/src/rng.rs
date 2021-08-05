@@ -12,15 +12,13 @@ use rand_core::RngCore;
 use crate::interrupt;
 use crate::pac;
 use crate::peripherals::RNG;
-use crate::util::io::{read, ByteRead, State};
+use crate::util::io::{read, ByteRead};
 
 impl RNG {
     fn regs() -> &'static pac::rng::RegisterBlock {
         unsafe { &*pac::RNG::ptr() }
     }
 }
-
-static STATE: State = State::new();
 
 /// A wrapper around an nRF RNG peripheral.
 ///
@@ -31,9 +29,11 @@ pub struct Rng<'d> {
 }
 
 impl<'d> ByteRead for Rng<'d> {
+    type Interrupt = interrupt::RNG;
+
     #[inline]
-    fn state() -> &'static crate::util::io::State {
-        &STATE
+    fn irq(&mut self) -> &mut Self::Interrupt {
+        &mut self.irq
     }
 
     #[inline]
@@ -42,7 +42,7 @@ impl<'d> ByteRead for Rng<'d> {
     }
 
     #[inline]
-    fn disable_irq() {
+    fn disable_irq(&self) {
         RNG::regs().intenclr.write(|w| w.valrdy().clear());
     }
 
@@ -59,12 +59,12 @@ impl<'d> ByteRead for Rng<'d> {
     }
 
     #[inline]
-    fn clear_event() {
+    fn clear_event(&self) {
         RNG::regs().events_valrdy.reset()
     }
 
     #[inline]
-    fn next_byte() -> u8 {
+    fn next_byte(&self) -> u8 {
         RNG::regs().value.read().value().bits()
     }
 }
@@ -89,18 +89,9 @@ impl<'d> Rng<'d> {
         };
 
         this.stop();
-        Self::disable_irq();
-
-        this.irq.set_handler(Self::on_interrupt);
-        this.irq.unpend();
-        this.irq.enable();
+        this.disable_irq();
 
         this
-    }
-
-    fn on_interrupt(_: *mut ()) {
-        // Defer to `IrqRead`.
-        Self::on_irq();
     }
 
     /// Enable or disable the RNG's bias correction.
@@ -129,7 +120,7 @@ impl<'d> traits::rng::Rng for Rng<'d> {
 
     #[inline]
     fn fill_bytes<'a>(&'a mut self, dest: &'a mut [u8]) -> Self::RngFuture<'a> {
-        // SAFETY: `irq_read`'s safety contract is forwarded to `Rng::new`.
+        // SAFETY: `read`'s safety contract is forwarded to `Rng::new`.
         unsafe { read(self, dest) }.map(|_| Ok(()))
     }
 }

@@ -23,41 +23,101 @@ pub mod dma {
 // `IrqWrite` isn't used outside of the nrf51.
 #[allow(dead_code)]
 pub mod io {
-    use core::ptr;
-    use core::sync::atomic::AtomicPtr;
-    use core::sync::atomic::Ordering;
-    use core::task::Poll;
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll};
+    use core::{mem, slice};
 
-    use embassy::util::AtomicWaker;
-    use embassy::util::OnDrop;
+    use embassy::interrupt::Interrupt;
+    use embassy::util::WakerRegistration;
+    use embassy::util::{OnDrop, Unborrow};
+    use embassy_hal_common::peripheral::{PeripheralMutex, PeripheralState, StateStorage};
     use futures::future::poll_fn;
 
-    pub struct State {
-        pub ptr: AtomicPtr<u8>,
-        pub end: AtomicPtr<u8>,
-        pub waker: AtomicWaker,
+    pub struct ReadState<'a, T> {
+        reader: &'a T,
+        buf_iter: slice::IterMut<'a, u8>,
+        waker: WakerRegistration,
     }
 
-    impl State {
-        pub const fn new() -> Self {
-            Self {
-                ptr: AtomicPtr::new(ptr::null_mut()),
-                end: AtomicPtr::new(ptr::null_mut()),
-                waker: AtomicWaker::new(),
+    pub struct WriteState<'a, T> {
+        reader: &'a T,
+        // This gets set to `None` after the last `txdrdy` is recieved, since the iterator having finished isn't enough to know we're done.
+        buf_iter: Option<slice::Iter<'a, u8>>,
+        waker: WakerRegistration,
+    }
+
+    impl<'a, T> PeripheralState for ReadState<'a, T>
+    where
+        T: ByteRead,
+    {
+        type Interrupt = T::Interrupt;
+        fn on_interrupt(&mut self) {
+            if let Some(byte) = self.buf_iter.next() {
+                // We only want to clear the event if we're not done,
+                // so that if we're already done the event will be handled immediately next time the peripheral is used.
+                //
+                // For example, in UART we want to first read out bytes which were already buffered by the peripheral,
+                // so we leave the `rxdrdy` event set to immediately trigger the interrupt next time it's enabled.
+                self.reader.clear_event();
+
+                *byte = self.reader.next_byte();
+
+                // TODO: Use `is_empty` instead when it gets stabilised, since it's a bit more efficient.
+                // Hopefully this'll compile down to the same thing.
+                if self.buf_iter.len() == 0 {
+                    // We've filled the buffer, so it's time to wake the task.
+                    self.waker.wake();
+                }
+            } else {
+                // If we're not clearing the event, we have to disable the interrupt,
+                // otherwise the interrupt gets re-fired as soon as it exits.
+                self.reader.disable_irq();
+            }
+        }
+    }
+
+    impl<'a, T> PeripheralState for WriteState<'a, T>
+    where
+        T: ByteWrite,
+    {
+        type Interrupt = T::Interrupt;
+        fn on_interrupt(&mut self) {
+            if let Some(iter) = &mut self.buf_iter {
+                self.reader.clear_event();
+
+                if let Some(&byte) = iter.next() {
+                    self.reader.set_next_byte(byte);
+                } else {
+                    // This is the `txdrdy` fired after the last byte was sent,
+                    // so it's time to wake the waker.
+
+                    // First, set the iterator to `None` so the future knows we're done.
+                    self.buf_iter = None;
+
+                    self.waker.wake();
+                }
+            } else {
+                // The only time when this interrupt should be fired with the iterator set to `None` is when the future is being dropped.
+                // We can't clear the event, since it relies on that to know when it's done,
+                // so instead disable the interrupt to stop it being repeatedly fired.
+                self.reader.disable_irq();
             }
         }
     }
 
     /// A helper to implement drivers which read from a register one byte at a time in an interrupt.
-    pub trait ByteRead {
-        /// Some state which should be stored in a `static` somewhere.
-        fn state() -> &'static State;
+    pub trait ByteRead: Sync {
+        /// This is only needed because `PeripheralState` requires it. TODO: Should `PeripheralState` require it in the first place?
+        type Interrupt: Interrupt;
+
+        fn irq(&mut self) -> &mut Self::Interrupt;
 
         /// Enable an interrupt to fire when a byte is ready to be read.
         fn enable_irq(&self);
 
         /// Disable an interrupt to fire when a byte is ready to be read.
-        fn disable_irq();
+        fn disable_irq(&self);
 
         /// Start the peripheral generating bytes.
         fn start(&self);
@@ -66,51 +126,10 @@ pub mod io {
         fn stop(&self);
 
         /// Clear the event which is triggering the interrupt.
-        fn clear_event();
+        fn clear_event(&self);
 
         /// Read the next byte from the peripheral.
-        fn next_byte() -> u8;
-
-        /// This should be called in an interrupt handler if the corresponding event has been fired.
-        fn on_irq() {
-            trace!("ByteRead::on_irq");
-
-            // Mutate the slice within a critical section,
-            // so that the future isn't dropped in between us loading the pointer and actually dereferencing it.
-            critical_section::with(|_| {
-                let ptr = Self::state().ptr.load(Ordering::Relaxed);
-                // We need to make sure we haven't already filled the whole slice,
-                // in case the interrupt fired again before the executor got back to the future.
-                let end = Self::state().end.load(Ordering::Relaxed);
-                trace!("ptr: {}, end: {}", ptr, end);
-                if !ptr.is_null() && ptr != end {
-                    // We only want to clear the event if we're not done,
-                    // so that if we're already done the event will be handled immediately next time the peripheral is used.
-                    //
-                    // For example, in UART we want to first read out bytes which were already buffered by the peripheral,
-                    // so we leave the `rxdrdy` event set to immediately trigger the interrupt next time it's enabled.
-                    Self::clear_event();
-
-                    // If the future was dropped, the pointer would have been set to null,
-                    // so we're still good to mutate the slice.
-                    // The safety contract of `irq_read` means that the future can't have been dropped
-                    // without calling its destructor.
-                    unsafe {
-                        *ptr = Self::next_byte();
-                    }
-
-                    let new_ptr = unsafe { ptr.add(1) };
-                    if new_ptr == end {
-                        Self::state().waker.wake();
-                    }
-                    Self::state().ptr.store(new_ptr, Ordering::Relaxed);
-                } else {
-                    // If we're not clearing the event, we have to disable the interrupt,
-                    // otherwise the interrupt gets re-fired as soon as it exits.
-                    Self::disable_irq();
-                }
-            });
-        }
+        fn next_byte(&self) -> u8;
     }
 
     /// The `read` function for `IrqRead` which you can more or less reexport.
@@ -120,43 +139,43 @@ pub mod io {
     /// # Safety
     /// The future's lifetime must not end without triggering its destructor,
     /// e.g. using `mem::forget`.
-    pub async unsafe fn read<T: ByteRead>(this: &mut T, dest: &mut [u8]) {
+    pub async unsafe fn read<T: ByteRead>(reader: &mut T, dest: &mut [u8]) {
+        // SAFETY: This future will only live as long as the reference to the original `irq`;
+        // we only need ownership to pass it to `PeripheralMutex`.
+        let irq = unsafe { reader.irq().unborrow() };
+
         if dest.len() == 0 {
             return; // Nothing to fill
         }
 
-        let range = dest.as_mut_ptr_range();
-        // Even if we've preempted the interrupt, it can't preempt us again,
-        // so we don't need to worry about the order we write these in.
-        T::state().ptr.store(range.start, Ordering::Relaxed);
-        T::state().end.store(range.end, Ordering::Relaxed);
+        let mut storage = StateStorage::new();
 
-        this.enable_irq();
-        this.start();
+        let mut mutex = PeripheralMutex::new_unchecked(irq, &mut storage, || ReadState {
+            reader: &*reader,
+            buf_iter: dest.iter_mut(),
+            waker: WakerRegistration::new(),
+        });
+
+        reader.enable_irq();
+        reader.start();
 
         let on_drop = OnDrop::new(|| {
             // Disable the interrupt first, so we don't waste its time with events it'll just ignore.
-            T::disable_irq();
-            this.stop();
-
-            // The interrupt is now disabled and can't preempt us anymore, so the order doesn't matter here.
-            T::state().ptr.store(ptr::null_mut(), Ordering::Relaxed);
-            T::state().end.store(ptr::null_mut(), Ordering::Relaxed);
+            reader.disable_irq();
+            reader.stop();
         });
 
         poll_fn(|cx| {
-            T::state().waker.register(cx.waker());
+            mutex.with(|state| {
+                state.waker.register(cx.waker());
 
-            // The interrupt will never modify `end`, so load it first and then get the most up-to-date `ptr`.
-            let end = T::state().end.load(Ordering::Relaxed);
-            let ptr = T::state().ptr.load(Ordering::Relaxed);
-
-            if ptr == end {
-                // We're done.
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
+                if state.buf_iter.len() == 0 {
+                    // We're done.
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
         })
         .await;
 
@@ -164,134 +183,107 @@ pub mod io {
         drop(on_drop);
     }
 
-    pub trait ByteWrite {
-        fn state() -> &'static State;
+    pub trait ByteWrite: Sync {
+        type Interrupt: Interrupt + Unpin;
+
+        fn irq(&mut self) -> &mut Self::Interrupt;
 
         fn enable_irq(&self);
-        fn disable_irq();
+        fn disable_irq(&self);
 
         fn start(&self);
         fn stop(&self);
 
         fn event_fired(&self) -> bool;
-        fn clear_event();
+        fn clear_event(&self);
 
-        fn set_next_byte(byte: u8);
-
-        fn on_irq() {
-            trace!("ByteWrite::on_irq");
-
-            // Actually dereference `ptr` in a critical section,
-            // so that the future isn't dropped in between us loading the pointer and actually dereferencing it.
-            critical_section::with(|_| {
-                let old_ptr = Self::state().ptr.load(Ordering::Relaxed) as *const u8;
-                // We need to check if this is the `txdrdy` fired after the last byte has been sent,
-                // so that we don't attempt to send another byte and dereference an invalid pointer.
-                let end = Self::state().end.load(Ordering::Relaxed) as *const u8;
-                trace!("  old_ptr: {}, end: {}", old_ptr, end);
-                if old_ptr.is_null() {
-                    // If we aren't going to clear the event, we need to disable the interrupt to prevent it being immediately re-fired.
-                    Self::disable_irq();
-
-                    // If the future was dropped, there's nothing we need to do.
-                    return;
-                }
-                // Only clear the event if the future hasn't been dropped,
-                // because it's used to detect when the last byte has been sent before finishing dropping.
-                Self::clear_event();
-
-                // `ptr` is 1 less than the thing we actually want to dereference,
-                // so that `ptr == end` only becomes true after the final byte is actually sent (and fires `txdrdy` again).
-                let ptr = unsafe { old_ptr.add(1) };
-                // If `ptr == end`, it's a pointer to just after the end of the slice, so we can't dereference it.
-                if ptr != end {
-                    trace!("  sending byte {}", unsafe { *ptr });
-                    // If the future was dropped, the pointer would have been set to null,
-                    // so we're still good to read from the slice.
-                    // The safety contract of `irq_write` means that the future can't have been dropped
-                    // without calling its destructor.
-                    Self::set_next_byte(unsafe { *ptr })
-                } else {
-                    trace!("  waking");
-                    // This was the final `txdrdy` after sending the last byte, time to wake the future.
-                    Self::state().waker.wake();
-                }
-                Self::state().ptr.store(ptr as *mut u8, Ordering::Relaxed);
-            });
-        }
+        fn set_next_byte(&self, byte: u8);
     }
 
     /// # Safety
     /// The future's lifetime must not end without triggering its destructor,
     /// e.g. using `mem::forget`.
-    pub async unsafe fn write<T: ByteWrite>(this: &mut T, buf: &[u8]) {
+    pub async unsafe fn write<T: ByteWrite>(reader: &mut T, buf: &[u8]) {
+        // SAFETY: This future will only live as long as the reference to the original `irq`;
+        // we only need ownership to pass it to `PeripheralMutex`.
+        let irq = unsafe { reader.irq().unborrow() };
+
         if buf.len() == 0 {
             return; // Nothing to send
         }
 
-        this.start();
+        reader.start();
 
-        T::set_next_byte(buf[0]);
+        reader.set_next_byte(buf[0]);
 
-        let range = buf.as_ptr_range();
+        let mut storage = StateStorage::new();
 
-        // `AtomicPtr` can only store `*mut` pointers, so we have to cast them for storage.
-        // We're storing a pointer to the byte _before_ the next byte the interrupt will write.
-        T::state()
-            .ptr
-            .store(range.start as *mut _, Ordering::Relaxed);
-        T::state().end.store(range.end as *mut _, Ordering::Relaxed);
-
-        this.enable_irq();
-
-        let on_drop = OnDrop::new(|| {
-            trace!("irq_write: dropping");
-
-            // Don't stop yet, because at least for UART triggering `tasks_stoptx` will cause the transmission to be 'stopped immediately' according to the reference manual.
-            // So wait for the last byte to finish.
-
-            // Set the pointers to null, so the interrupt doesn't go on to send another byte.
-            // Set `ptr` first because it's the one the interrupt checks.
-            T::state().ptr.store(ptr::null_mut(), Ordering::Relaxed);
-            T::state().end.store(ptr::null_mut(), Ordering::Relaxed);
-
-            while !this.event_fired() {
-                trace!("  wfe");
-                cortex_m::asm::wfe();
-            }
-            cortex_m::asm::sev();
-
-            // Now we can safely stop the transmission.
-            this.stop();
-            T::disable_irq();
+        let mutex = PeripheralMutex::new_unchecked(irq, &mut storage, || WriteState {
+            reader: &*reader,
+            buf_iter: Some(buf[1..].iter()),
+            waker: WakerRegistration::new(),
         });
 
-        poll_fn(|cx| {
-            trace!("irq_write: poll_fn");
+        reader.enable_irq();
 
-            T::state().waker.register(cx.waker());
+        // This is needed because if we keep mutable references to `mutex` in both `OnDrop` and `poll_fn`,
+        // it's aliasing mutable references, so we have to use an actual intermediate `Future`.
+        struct InnerFuture<'a, T: ByteWrite> {
+            reader: &'a T,
+            mutex: PeripheralMutex<'a, WriteState<'a, T>>,
+        }
 
-            // The interrupt will never modify `end`, so load it first and then get the most up-to-date `ptr`.
-            let end = T::state().end.load(Ordering::Relaxed);
-            let ptr = T::state().ptr.load(Ordering::Relaxed);
+        impl<'a, T: ByteWrite> Future for InnerFuture<'a, T> {
+            type Output = ();
 
-            trace!("  ptr: {}, end: {}", ptr, end);
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                trace!("irq_write: poll");
 
-            if ptr == end {
-                trace!("  ready");
-                Poll::Ready(())
-            } else {
-                Poll::Pending
+                self.mutex.with(|state| {
+                    state.waker.register(cx.waker());
+
+                    // The interrupt sets `buf_iter` to `None` when it's done.
+                    if state.buf_iter.is_none() {
+                        trace!("  ready");
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
             }
-        })
-        .await;
+        }
 
-        on_drop.defuse();
+        impl<'a, T: ByteWrite> Drop for InnerFuture<'a, T> {
+            fn drop(&mut self) {
+                trace!("irq_write: dropping");
 
-        this.stop();
-        T::disable_irq();
+                // Don't stop yet, because at least for UART triggering `tasks_stoptx` will cause the transmission to be 'stopped immediately' according to the reference manual.
+                // So wait for the last byte to finish.
 
-        T::state().ptr.store(ptr::null_mut(), Ordering::Relaxed);
-        T::state().end.store(ptr::null_mut(), Ordering::Relaxed);
+                // Set `buf_iter` to `None`, to tell the interrupt it's done and stop it from sending another byte.
+                self.mutex.with(|state| {
+                    state.buf_iter = None;
+                });
+
+                while !self.reader.event_fired() {
+                    trace!("  wfe");
+                    cortex_m::asm::wfe();
+                }
+                cortex_m::asm::sev();
+
+                // Now we can safely stop the transmission.
+                self.reader.stop();
+                self.reader.disable_irq();
+            }
+        }
+
+        let mut fut = InnerFuture { reader, mutex };
+        Pin::new(&mut fut).await;
+
+        // Since the future completed properly, we don't need to wait for the last byte.
+        mem::forget(fut);
+
+        reader.stop();
+        reader.disable_irq();
     }
 }

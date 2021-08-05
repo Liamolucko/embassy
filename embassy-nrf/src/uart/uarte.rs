@@ -339,7 +339,7 @@ impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> UarteWithIdle<'d,
         Self {
             uarte,
             timer,
-            ppi_ch1: ppi_ch1,
+            ppi_ch1,
             _ppi_ch2: ppi_ch2,
         }
     }
