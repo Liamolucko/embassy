@@ -1,16 +1,12 @@
 use core::convert::Infallible;
-use core::future::Future;
-use core::marker::PhantomData;
-use core::task::{Context, Poll};
+use core::task::Poll;
 use embassy::interrupt::{Interrupt, InterruptExt};
-use embassy::traits::gpio::{WaitForAnyEdge, WaitForHigh, WaitForLow};
 use embassy::waitqueue::AtomicWaker;
 use embassy_hal_common::unsafe_impl_unborrow;
 use embedded_hal::digital::v2::{InputPin, StatefulOutputPin};
 use futures::future::poll_fn;
 
-use crate::gpio::sealed::Pin as _;
-use crate::gpio::{AnyPin, Input, Output, Pin as GpioPin};
+use crate::gpio::{Input, Output, Pin as GpioPin};
 use crate::pac;
 use crate::ppi::{Event, Task};
 use crate::{interrupt, peripherals};
@@ -321,6 +317,19 @@ impl<'d, C: Channel, T: GpioPin> OutputChannel<'d, C, T> {
 // TODO: expose the PORT event in some other way on the nrf51
 #[cfg(not(feature = "nrf51"))]
 mod port_input {
+    use core::convert::Infallible;
+    use core::future::Future;
+    use core::marker::PhantomData;
+    use core::task::{Context, Poll};
+
+    use embassy::traits::gpio::{WaitForAnyEdge, WaitForHigh, WaitForLow};
+    use embedded_hal::digital::v2::InputPin;
+
+    use crate::gpio::sealed::Pin;
+    use crate::gpio::{AnyPin, Input, Pin as GpioPin};
+
+    use super::PORT_WAKERS;
+
     /// GPIOTE port input driver
     pub struct PortInput<'d, T: GpioPin> {
         pin: Input<'d, T>,
@@ -425,7 +434,7 @@ mod port_input {
     }
 }
 #[cfg(not(feature = "nrf51"))]
-use port_input::*;
+pub use port_input::*;
 
 mod sealed {
     pub trait Channel {}

@@ -35,7 +35,7 @@ pub(crate) mod sealed {
     pub trait SupportsBitmode<T: Bitmode> {}
 }
 
-pub trait Bitmode: TryFrom<u32, Error = Self::Err> + Into<u32> {
+pub trait Bitmode: TryFrom<u32, Error = Self::Err> + Into<u32> + Send + Sync + 'static {
     // If we don't do this, we end up having to include ridiculous `where` clauses on everything.
     // (due to https://github.com/rust-lang/rust/issues/20671, i think)
     type Err: Debug;

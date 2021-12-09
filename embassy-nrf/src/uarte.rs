@@ -30,8 +30,8 @@ use crate::gpio::{self, OptionalPin as GpioOptionalPin, Pin as GpioPin};
 use crate::interrupt::Interrupt;
 use crate::pac;
 use crate::ppi::{AnyConfigurableChannel, ConfigurableChannel, Event, Ppi, Task};
-use crate::timer::Instance as TimerInstance;
 use crate::timer::{Frequency, Timer};
+use crate::timer::{Instance as TimerInstance, SupportsBitmode};
 
 // Re-export SVD variants to allow user to directly set values.
 pub use pac::uarte0::{baudrate::BAUDRATE_A as Baudrate, config::PARITY_A as Parity};
@@ -330,14 +330,14 @@ pub(in crate) fn apply_workaround_for_enable_anomaly(r: &crate::pac::uarte0::Reg
 
 /// Interface to an UARTE peripheral that uses an additional timer and two PPI channels,
 /// allowing it to implement the ReadUntilIdle trait.
-pub struct UarteWithIdle<'d, U: Instance, T: TimerInstance> {
+pub struct UarteWithIdle<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> {
     uarte: Uarte<'d, U>,
-    timer: Timer<'d, T>,
+    timer: Timer<'d, T, u16>,
     ppi_ch1: Ppi<'d, AnyConfigurableChannel, 1, 2>,
     _ppi_ch2: Ppi<'d, AnyConfigurableChannel, 1, 1>,
 }
 
-impl<'d, U: Instance, T: TimerInstance> UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> UarteWithIdle<'d, U, T> {
     /// Creates the interface to a UARTE instance.
     /// Sets the baud rate, parity and assigns the pins to the UARTE peripheral.
     ///
@@ -361,7 +361,7 @@ impl<'d, U: Instance, T: TimerInstance> UarteWithIdle<'d, U, T> {
     ) -> Self {
         let baudrate = config.baudrate;
         let uarte = Uarte::new(uarte, irq, rxd, txd, cts, rts, config);
-        let mut timer = Timer::new(timer);
+        let mut timer: Timer<T, u16> = Timer::new(timer);
 
         unborrow!(ppi_ch1, ppi_ch2);
 
@@ -376,7 +376,7 @@ impl<'d, U: Instance, T: TimerInstance> UarteWithIdle<'d, U, T> {
         let timeout = 0x8000_0000 / (baudrate as u32 / 40);
 
         timer.set_frequency(Frequency::F16MHz);
-        timer.cc(0).write(timeout);
+        timer.cc(0).write(timeout as u16);
         timer.cc(0).short_compare_clear();
         timer.cc(0).short_compare_stop();
 
@@ -404,7 +404,9 @@ impl<'d, U: Instance, T: TimerInstance> UarteWithIdle<'d, U, T> {
     }
 }
 
-impl<'d, U: Instance, T: TimerInstance> ReadUntilIdle for UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> ReadUntilIdle
+    for UarteWithIdle<'d, U, T>
+{
     #[rustfmt::skip]
     type ReadUntilIdleFuture<'a> where Self: 'a = impl Future<Output = Result<usize, TraitError>> + 'a;
     fn read_until_idle<'a>(&'a mut self, rx_buffer: &'a mut [u8]) -> Self::ReadUntilIdleFuture<'a> {
@@ -464,7 +466,7 @@ impl<'d, U: Instance, T: TimerInstance> ReadUntilIdle for UarteWithIdle<'d, U, T
     }
 }
 
-impl<'d, U: Instance, T: TimerInstance> Read for UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> Read for UarteWithIdle<'d, U, T> {
     #[rustfmt::skip]
     type ReadFuture<'a> where Self: 'a = impl Future<Output = Result<(), TraitError>> + 'a;
     fn read<'a>(&'a mut self, rx_buffer: &'a mut [u8]) -> Self::ReadFuture<'a> {
@@ -477,7 +479,7 @@ impl<'d, U: Instance, T: TimerInstance> Read for UarteWithIdle<'d, U, T> {
     }
 }
 
-impl<'d, U: Instance, T: TimerInstance> Write for UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> Write for UarteWithIdle<'d, U, T> {
     #[rustfmt::skip]
     type WriteFuture<'a> where Self: 'a = impl Future<Output = Result<(), TraitError>> + 'a;
 
