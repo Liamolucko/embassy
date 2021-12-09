@@ -111,6 +111,8 @@ embassy_hal_common::peripherals! {
     TEMP,
 }
 
+impl_uart!(UART0, UART0, UART0);
+
 // Note: all the timers which support 32-bit also support 24-bit.
 impl_timer!(TIMER0, TIMER0, TIMER0, [u8, u16, u32], u32);
 impl_timer!(TIMER1, TIMER1, TIMER1, [u8, u16], u16);

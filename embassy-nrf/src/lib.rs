@@ -55,7 +55,6 @@ pub mod temp;
 pub mod timer;
 #[cfg(not(feature = "nrf51"))]
 pub mod twim;
-#[cfg(not(feature = "nrf51"))]
 pub mod uart;
 #[cfg(not(feature = "_nrf5340"))]
 pub mod wdt;
