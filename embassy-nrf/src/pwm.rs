@@ -10,7 +10,7 @@ use crate::gpio::{AnyPin, OptionalPin as GpioOptionalPin};
 use crate::interrupt::Interrupt;
 use crate::pac;
 use crate::ppi::{Event, Task};
-use crate::util::slice_in_ram_or;
+use crate::util::dma::slice_in_ram_or;
 
 /// SimplePwm is the traditional pwm interface you're probably used to, allowing
 /// to simply set a duty cycle across up to four channels.
