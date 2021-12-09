@@ -9,16 +9,16 @@ use example_common::*;
 use embassy::executor::Spawner;
 use embassy::traits::uart::{Read, Write};
 use embassy_nrf::gpio::NoPin;
-use embassy_nrf::{interrupt, uarte, Peripherals};
+use embassy_nrf::{interrupt, uart, Peripherals};
 
 #[embassy::main]
 async fn main(_spawner: Spawner, p: Peripherals) {
-    let mut config = uarte::Config::default();
-    config.parity = uarte::Parity::EXCLUDED;
-    config.baudrate = uarte::Baudrate::BAUD115200;
+    let mut config = uart::Config::default();
+    config.parity = uart::Parity::EXCLUDED;
+    config.baudrate = uart::Baudrate::BAUD115200;
 
     let irq = interrupt::take!(UARTE0_UART0);
-    let mut uart = uarte::Uarte::new(p.UARTE0, irq, p.P0_08, p.P0_06, NoPin, NoPin, config);
+    let mut uart = uart::Uart::new(p.UARTE0, irq, p.P0_08, p.P0_06, NoPin, NoPin, config);
 
     info!("uarte initialized!");
 

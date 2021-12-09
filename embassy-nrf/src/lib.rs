@@ -28,7 +28,7 @@ pub(crate) mod util;
 mod time_driver;
 
 #[cfg(not(feature = "nrf51"))]
-pub mod buffered_uarte;
+pub mod buffered_uart;
 pub mod gpio;
 #[cfg(feature = "gpiote")]
 pub mod gpiote;
@@ -56,7 +56,7 @@ pub mod timer;
 #[cfg(not(feature = "nrf51"))]
 pub mod twim;
 #[cfg(not(feature = "nrf51"))]
-pub mod uarte;
+pub mod uart;
 #[cfg(not(feature = "_nrf5340"))]
 pub mod wdt;
 

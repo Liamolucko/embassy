@@ -7,24 +7,24 @@ mod example_common;
 
 use embassy::executor::Spawner;
 use embassy::io::{AsyncBufReadExt, AsyncWriteExt};
-use embassy_nrf::buffered_uarte::State;
+use embassy_nrf::buffered_uart::State;
 use embassy_nrf::gpio::NoPin;
-use embassy_nrf::{buffered_uarte::BufferedUarte, interrupt, uarte, Peripherals};
+use embassy_nrf::{buffered_uart::BufferedUart, interrupt, uart, Peripherals};
 use example_common::*;
 use futures::pin_mut;
 
 #[embassy::main]
 async fn main(_spawner: Spawner, p: Peripherals) {
-    let mut config = uarte::Config::default();
-    config.parity = uarte::Parity::EXCLUDED;
-    config.baudrate = uarte::Baudrate::BAUD115200;
+    let mut config = uart::Config::default();
+    config.parity = uart::Parity::EXCLUDED;
+    config.baudrate = uart::Baudrate::BAUD115200;
 
     let mut tx_buffer = [0u8; 4096];
     let mut rx_buffer = [0u8; 4096];
 
     let irq = interrupt::take!(UARTE0_UART0);
     let mut state = State::new();
-    let u = BufferedUarte::new(
+    let u = BufferedUart::new(
         &mut state,
         p.UARTE0,
         p.TIMER0,

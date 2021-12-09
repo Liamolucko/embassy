@@ -22,7 +22,7 @@ use crate::pac;
 use crate::ppi::{AnyConfigurableChannel, ConfigurableChannel, Event, Ppi, Task};
 use crate::timer::Instance as TimerInstance;
 use crate::timer::{Frequency, SupportsBitmode, Timer};
-use crate::uarte::{apply_workaround_for_enable_anomaly, Config, Instance as UarteInstance};
+use crate::uart::{apply_workaround_for_enable_anomaly, Config, Instance as UartInstance};
 
 // Re-export SVD variants to allow user to directly set values
 pub use pac::uarte0::{baudrate::BAUDRATE_A as Baudrate, config::PARITY_A as Parity};
@@ -39,16 +39,16 @@ enum TxState {
     Transmitting(usize),
 }
 
-pub struct State<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>>(
+pub struct State<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>>(
     StateStorage<StateInner<'d, U, T>>,
 );
-impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> State<'d, U, T> {
+impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> State<'d, U, T> {
     pub fn new() -> Self {
         Self(StateStorage::new())
     }
 }
 
-struct StateInner<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> {
+struct StateInner<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> {
     phantom: PhantomData<&'d mut U>,
     timer: Timer<'d, T, u16>,
     _ppi_ch1: Ppi<'d, AnyConfigurableChannel, 1, 2>,
@@ -64,16 +64,16 @@ struct StateInner<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>>
 }
 
 /// Interface to a UARTE instance
-pub struct BufferedUarte<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> {
+pub struct BufferedUart<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> {
     inner: PeripheralMutex<'d, StateInner<'d, U, T>>,
 }
 
-impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> Unpin
-    for BufferedUarte<'d, U, T>
+impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> Unpin
+    for BufferedUart<'d, U, T>
 {
 }
 
-impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUarte<'d, U, T> {
+impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUart<'d, U, T> {
     pub fn new(
         state: &'d mut State<'d, U, T>,
         _uarte: impl Unborrow<Target = U> + 'd,
@@ -201,8 +201,8 @@ impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> BufferedUart
     }
 }
 
-impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> AsyncBufRead
-    for BufferedUarte<'d, U, T>
+impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> AsyncBufRead
+    for BufferedUart<'d, U, T>
 {
     fn poll_fill_buf(
         mut self: Pin<&mut Self>,
@@ -239,8 +239,8 @@ impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> AsyncBufRead
     }
 }
 
-impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> AsyncWrite
-    for BufferedUarte<'d, U, T>
+impl<'d, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> AsyncWrite
+    for BufferedUart<'d, U, T>
 {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -277,7 +277,7 @@ impl<'d, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> AsyncWrite
     }
 }
 
-impl<'a, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> Drop for StateInner<'a, U, T> {
+impl<'a, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> Drop for StateInner<'a, U, T> {
     fn drop(&mut self) {
         let r = U::regs();
 
@@ -299,7 +299,7 @@ impl<'a, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> Drop for Sta
     }
 }
 
-impl<'a, U: UarteInstance, T: TimerInstance + SupportsBitmode<u16>> PeripheralState
+impl<'a, U: UartInstance, T: TimerInstance + SupportsBitmode<u16>> PeripheralState
     for StateInner<'a, U, T>
 {
     type Interrupt = U::Interrupt;

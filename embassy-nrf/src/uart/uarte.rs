@@ -33,30 +33,17 @@ use crate::ppi::{AnyConfigurableChannel, ConfigurableChannel, Event, Ppi, Task};
 use crate::timer::{Frequency, Timer};
 use crate::timer::{Instance as TimerInstance, SupportsBitmode};
 
+use super::Config;
+
 // Re-export SVD variants to allow user to directly set values.
 pub use pac::uarte0::{baudrate::BAUDRATE_A as Baudrate, config::PARITY_A as Parity};
 
-#[non_exhaustive]
-pub struct Config {
-    pub parity: Parity,
-    pub baudrate: Baudrate,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            parity: Parity::EXCLUDED,
-            baudrate: Baudrate::BAUD115200,
-        }
-    }
-}
-
 /// Interface to the UARTE peripheral
-pub struct Uarte<'d, T: Instance> {
+pub struct Uart<'d, T: Instance> {
     phantom: PhantomData<&'d mut T>,
 }
 
-impl<'d, T: Instance> Uarte<'d, T> {
+impl<'d, T: Instance> Uart<'d, T> {
     /// Creates the interface to a UARTE instance.
     /// Sets the baud rate, parity and assigns the pins to the UARTE peripheral.
     pub fn new(
@@ -116,7 +103,7 @@ impl<'d, T: Instance> Uarte<'d, T> {
         irq.enable();
 
         // Enable
-        apply_workaround_for_enable_anomaly(&r);
+        apply_workaround_for_enable_anomaly(r);
         r.enable.write(|w| w.enable().enabled());
 
         Self {
@@ -139,7 +126,7 @@ impl<'d, T: Instance> Uarte<'d, T> {
     }
 }
 
-impl<'a, T: Instance> Drop for Uarte<'a, T> {
+impl<'a, T: Instance> Drop for Uart<'a, T> {
     fn drop(&mut self) {
         info!("uarte drop");
 
@@ -166,7 +153,7 @@ impl<'a, T: Instance> Drop for Uarte<'a, T> {
     }
 }
 
-impl<'d, T: Instance> Read for Uarte<'d, T> {
+impl<'d, T: Instance> Read for Uart<'d, T> {
     #[rustfmt::skip]
     type ReadFuture<'a> where Self: 'a = impl Future<Output = Result<(), TraitError>> + 'a;
 
@@ -220,7 +207,7 @@ impl<'d, T: Instance> Read for Uarte<'d, T> {
     }
 }
 
-impl<'d, T: Instance> Write for Uarte<'d, T> {
+impl<'d, T: Instance> Write for Uart<'d, T> {
     #[rustfmt::skip]
     type WriteFuture<'a> where Self: 'a = impl Future<Output = Result<(), TraitError>> + 'a;
 
@@ -330,14 +317,14 @@ pub(in crate) fn apply_workaround_for_enable_anomaly(r: &crate::pac::uarte0::Reg
 
 /// Interface to an UARTE peripheral that uses an additional timer and two PPI channels,
 /// allowing it to implement the ReadUntilIdle trait.
-pub struct UarteWithIdle<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> {
-    uarte: Uarte<'d, U>,
+pub struct UartWithIdle<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> {
+    uarte: Uart<'d, U>,
     timer: Timer<'d, T, u16>,
     ppi_ch1: Ppi<'d, AnyConfigurableChannel, 1, 2>,
     _ppi_ch2: Ppi<'d, AnyConfigurableChannel, 1, 1>,
 }
 
-impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> UartWithIdle<'d, U, T> {
     /// Creates the interface to a UARTE instance.
     /// Sets the baud rate, parity and assigns the pins to the UARTE peripheral.
     ///
@@ -360,7 +347,7 @@ impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> UarteWithIdle<'d,
         config: Config,
     ) -> Self {
         let baudrate = config.baudrate;
-        let uarte = Uarte::new(uarte, irq, rxd, txd, cts, rts, config);
+        let uarte = Uart::new(uarte, irq, rxd, txd, cts, rts, config);
         let mut timer: Timer<T, u16> = Timer::new(timer);
 
         unborrow!(ppi_ch1, ppi_ch2);
@@ -398,14 +385,14 @@ impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> UarteWithIdle<'d,
         Self {
             uarte,
             timer,
-            ppi_ch1: ppi_ch1,
+            ppi_ch1,
             _ppi_ch2: ppi_ch2,
         }
     }
 }
 
 impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> ReadUntilIdle
-    for UarteWithIdle<'d, U, T>
+    for UartWithIdle<'d, U, T>
 {
     #[rustfmt::skip]
     type ReadUntilIdleFuture<'a> where Self: 'a = impl Future<Output = Result<usize, TraitError>> + 'a;
@@ -466,7 +453,7 @@ impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> ReadUntilIdle
     }
 }
 
-impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> Read for UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> Read for UartWithIdle<'d, U, T> {
     #[rustfmt::skip]
     type ReadFuture<'a> where Self: 'a = impl Future<Output = Result<(), TraitError>> + 'a;
     fn read<'a>(&'a mut self, rx_buffer: &'a mut [u8]) -> Self::ReadFuture<'a> {
@@ -479,7 +466,7 @@ impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> Read for UarteWit
     }
 }
 
-impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> Write for UarteWithIdle<'d, U, T> {
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> Write for UartWithIdle<'d, U, T> {
     #[rustfmt::skip]
     type WriteFuture<'a> where Self: 'a = impl Future<Output = Result<(), TraitError>> + 'a;
 
@@ -518,16 +505,16 @@ pub trait Instance: Unborrow<Target = Self> + sealed::Instance + 'static + Send 
 
 macro_rules! impl_uarte {
     ($type:ident, $pac_type:ident, $irq:ident) => {
-        impl crate::uarte::sealed::Instance for peripherals::$type {
+        impl crate::uart::sealed::Instance for peripherals::$type {
             fn regs() -> &'static pac::uarte0::RegisterBlock {
                 unsafe { &*pac::$pac_type::ptr() }
             }
-            fn state() -> &'static crate::uarte::sealed::State {
-                static STATE: crate::uarte::sealed::State = crate::uarte::sealed::State::new();
+            fn state() -> &'static crate::uart::sealed::State {
+                static STATE: crate::uart::sealed::State = crate::uart::sealed::State::new();
                 &STATE
             }
         }
-        impl crate::uarte::Instance for peripherals::$type {
+        impl crate::uart::Instance for peripherals::$type {
             type Interrupt = crate::interrupt::$irq;
         }
     };
