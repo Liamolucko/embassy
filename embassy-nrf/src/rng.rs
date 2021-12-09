@@ -2,10 +2,10 @@ use core::convert::Infallible;
 use core::future::Future;
 use core::marker::PhantomData;
 use core::ptr;
-use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering;
 use core::task::Poll;
 
+use atomic_polyfill::AtomicPtr;
 use embassy::interrupt::InterruptExt;
 use embassy::traits;
 use embassy::util::Unborrow;

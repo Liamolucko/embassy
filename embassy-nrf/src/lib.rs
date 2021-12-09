@@ -27,6 +27,7 @@ pub(crate) mod util;
 #[cfg(feature = "_time-driver")]
 mod time_driver;
 
+#[cfg(not(feature = "nrf51"))]
 pub mod buffered_uarte;
 pub mod gpio;
 #[cfg(feature = "gpiote")]
@@ -34,24 +35,33 @@ pub mod gpiote;
 #[cfg(not(any(feature = "_nrf5340", feature = "_nrf9160")))]
 pub mod nvmc;
 pub mod ppi;
-#[cfg(not(any(feature = "nrf52805", feature = "nrf52820", feature = "_nrf5340-net")))]
+#[cfg(not(any(
+    feature = "nrf51",
+    feature = "nrf52805",
+    feature = "nrf52820",
+    feature = "_nrf5340-net"
+)))]
 pub mod pwm;
 #[cfg(feature = "nrf52840")]
 pub mod qspi;
 #[cfg(not(any(feature = "_nrf5340", feature = "_nrf9160")))]
 pub mod rng;
-#[cfg(not(any(feature = "nrf52820", feature = "_nrf5340-net")))]
+#[cfg(not(any(feature = "nrf51", feature = "nrf52820", feature = "_nrf5340-net")))]
 pub mod saadc;
+#[cfg(not(feature = "nrf51"))]
 pub mod spim;
 #[cfg(not(any(feature = "_nrf5340", feature = "_nrf9160")))]
 pub mod temp;
 pub mod timer;
+#[cfg(not(feature = "nrf51"))]
 pub mod twim;
+#[cfg(not(feature = "nrf51"))]
 pub mod uarte;
 #[cfg(not(feature = "_nrf5340"))]
 pub mod wdt;
 
 // This mod MUST go last, so that it sees all the `impl_foo!` macros
+#[cfg_attr(feature = "nrf51", path = "chips/nrf51.rs")]
 #[cfg_attr(feature = "nrf52805", path = "chips/nrf52805.rs")]
 #[cfg_attr(feature = "nrf52810", path = "chips/nrf52810.rs")]
 #[cfg_attr(feature = "nrf52811", path = "chips/nrf52811.rs")]
@@ -64,6 +74,8 @@ pub mod wdt;
 #[cfg_attr(feature = "_nrf9160", path = "chips/nrf9160.rs")]
 mod chip;
 
+// TODO: this should be supported on the nrf51, I'm just not sure what it is.
+#[cfg(not(feature = "nrf51"))]
 pub use chip::EASY_DMA_SIZE;
 
 #[cfg(feature = "unstable-pac")]
@@ -94,7 +106,7 @@ pub mod config {
         ExternalXtal,
         #[cfg(not(any(feature = "_nrf5340", feature = "_nrf9160")))]
         ExternalLowSwing,
-        #[cfg(not(any(feature = "_nrf5340", feature = "_nrf9160")))]
+        #[cfg(not(any(feature = "nrf51", feature = "_nrf5340", feature = "_nrf9160")))]
         ExternalFullSwing,
     }
 
@@ -153,10 +165,14 @@ pub fn init(config: config::Config) -> Peripherals {
 
         config::LfclkSource::ExternalLowSwing => r.lfclksrc.write(|w| {
             w.src().xtal();
-            w.external().enabled();
-            w.bypass().disabled();
+            #[cfg(not(feature = "nrf51"))]
+            {
+                w.external().enabled();
+                w.bypass().disabled();
+            }
             w
         }),
+        #[cfg(not(feature = "nrf51"))]
         config::LfclkSource::ExternalFullSwing => r.lfclksrc.write(|w| {
             w.src().xtal();
             w.external().enabled();

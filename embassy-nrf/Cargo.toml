@@ -12,6 +12,7 @@ edition = "2018"
 # There are no plans to make this stable.
 unstable-pac = []
 
+nrf51 = ["nrf51-pac", "_ppi"]
 nrf52805 = ["nrf52805-pac", "_ppi"]
 nrf52810 = ["nrf52810-pac", "_ppi"]
 nrf52811 = ["nrf52811-pac", "_ppi"]
@@ -47,6 +48,7 @@ embassy = { version = "0.1.0", path = "../embassy" }
 embassy-macros = { version = "0.1.0", path = "../embassy-macros", features = ["nrf"]}
 embassy-hal-common = {version = "0.1.0", path = "../embassy-hal-common" }
 
+atomic-polyfill = "0.1.5"
 defmt = { version = "0.3", optional = true }
 log = { version = "0.4.14", optional = true }
 cortex-m-rt = ">=0.6.15,<0.8"
@@ -60,6 +62,7 @@ fixed = "1.10.0"
 embedded-storage = "0.2.0"
 cfg-if = "1.0.0"
 
+nrf51-pac = { version = "0.10.1", optional = true, features = [ "rt" ] }
 nrf52805-pac  = { version = "0.10.1", optional = true, features = [ "rt" ] }
 nrf52810-pac  = { version = "0.10.1", optional = true, features = [ "rt" ] }
 nrf52811-pac  = { version = "0.10.1", optional = true, features = [ "rt" ] }

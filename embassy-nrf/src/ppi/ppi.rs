@@ -102,6 +102,7 @@ impl<'d, C: Channel, const EVENT_COUNT: usize, const TASK_COUNT: usize> Drop
         let n = self.ch.number();
         r.ch[n].eep.write(|w| unsafe { w.bits(0) });
         r.ch[n].tep.write(|w| unsafe { w.bits(0) });
+        #[cfg(not(feature = "nrf51"))]
         r.fork[n].tep.write(|w| unsafe { w.bits(0) });
     }
 }
