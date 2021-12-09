@@ -1,5 +1,7 @@
 #![macro_use]
 
+use core::convert::{TryFrom, TryInto};
+use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::task::Poll;
 
@@ -10,6 +12,7 @@ use embassy::waitqueue::AtomicWaker;
 use embassy_hal_common::drop::OnDrop;
 use embassy_hal_common::unborrow;
 use futures::future::poll_fn;
+use pac::timer0::bitmode::{self, BITMODE_W};
 
 use crate::pac;
 use crate::ppi::{Event, Task};
@@ -28,15 +31,52 @@ pub(crate) mod sealed {
     pub trait ExtendedInstance {}
 
     pub trait TimerType {}
+
+    pub trait SupportsBitmode<T: Bitmode> {}
 }
 
-pub trait Instance: Unborrow<Target = Self> + sealed::Instance + 'static + Send {
+pub trait Bitmode: TryFrom<u32, Error = Self::Err> + Into<u32> {
+    // If we don't do this, we end up having to include ridiculous `where` clauses on everything.
+    // (due to https://github.com/rust-lang/rust/issues/20671, i think)
+    type Err: Debug;
+    fn config(w: BITMODE_W) -> &mut bitmode::W;
+}
+
+impl Bitmode for u8 {
+    type Err = <Self as TryFrom<u32>>::Error;
+    fn config(w: BITMODE_W) -> &mut bitmode::W {
+        w._08bit()
+    }
+}
+
+impl Bitmode for u16 {
+    type Err = <Self as TryFrom<u32>>::Error;
+    fn config(w: BITMODE_W) -> &mut bitmode::W {
+        w._16bit()
+    }
+}
+
+// TODO: support 24-bit bitmodes. Maybe use a `U24` wrapper type or something?
+
+impl Bitmode for u32 {
+    type Err = <Self as TryFrom<u32>>::Error;
+    fn config(w: BITMODE_W) -> &mut bitmode::W {
+        w._32bit()
+    }
+}
+
+pub trait SupportsBitmode<T: Bitmode>: sealed::SupportsBitmode<T> {}
+
+pub trait Instance:
+    Unborrow<Target = Self> + sealed::Instance + 'static + Send + SupportsBitmode<Self::MaxBitmode>
+{
+    type MaxBitmode: Bitmode;
     type Interrupt: Interrupt;
 }
 pub trait ExtendedInstance: Instance + sealed::ExtendedInstance {}
 
 macro_rules! impl_timer {
-    ($type:ident, $pac_type:ident, $irq:ident, $ccs:literal) => {
+    ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*], $max_bitmode:path, $ccs:literal) => {
         impl crate::timer::sealed::Instance for peripherals::$type {
             const CCS: usize = $ccs;
             fn regs() -> &'static pac::timer0::RegisterBlock {
@@ -44,20 +84,27 @@ macro_rules! impl_timer {
             }
             fn waker(n: usize) -> &'static ::embassy::waitqueue::AtomicWaker {
                 use ::embassy::waitqueue::AtomicWaker;
+                // This constant is only used to initialize `WAKERS` and never mutated.
+                #[allow(clippy::declare_interior_mutable_const)]
                 const NEW_AW: AtomicWaker = AtomicWaker::new();
                 static WAKERS: [AtomicWaker; $ccs] = [NEW_AW; $ccs];
                 &WAKERS[n]
             }
         }
         impl crate::timer::Instance for peripherals::$type {
+            type MaxBitmode = $max_bitmode;
             type Interrupt = crate::interrupt::$irq;
         }
+        $(
+            impl crate::timer::sealed::SupportsBitmode<$bitmode> for peripherals::$type {}
+            impl crate::timer::SupportsBitmode<$bitmode> for peripherals::$type {}
+        )*
     };
-    ($type:ident, $pac_type:ident, $irq:ident) => {
-        impl_timer!($type, $pac_type, $irq, 4);
+    ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*], $max_bitmode:path) => {
+        impl_timer!($type, $pac_type, $irq, [$($bitmode),*], $max_bitmode, 4);
     };
-    ($type:ident, $pac_type:ident, $irq:ident, extended) => {
-        impl_timer!($type, $pac_type, $irq, 6);
+    ($type:ident, $pac_type:ident, $irq:ident, [$($bitmode:path),*], $max_bitmode:path, extended) => {
+        impl_timer!($type, $pac_type, $irq, [$($bitmode),*], $max_bitmode, 6);
         impl crate::timer::sealed::ExtendedInstance for peripherals::$type {}
         impl crate::timer::ExtendedInstance for peripherals::$type {}
     };
@@ -78,14 +125,6 @@ pub enum Frequency {
     F31250Hz = 9,
 }
 
-/// nRF Timer driver.
-///
-/// The timer has an internal counter, which is incremented for every tick of the timer.
-/// The counter is 32-bit, so it wraps back to 0 at 4294967296.
-///
-/// It has either 4 or 6 Capture/Compare registers, which can be used to capture the current state of the counter
-/// or trigger an event when the counter reaches a certain value.
-
 pub trait TimerType: sealed::TimerType {}
 
 pub enum Awaitable {}
@@ -96,11 +135,31 @@ impl sealed::TimerType for NotAwaitable {}
 impl TimerType for Awaitable {}
 impl TimerType for NotAwaitable {}
 
-pub struct Timer<'d, T: Instance, I: TimerType = NotAwaitable> {
-    phantom: PhantomData<(&'d mut T, I)>,
+/// nRF Timer driver.
+///
+/// The timer has an internal counter, which is incremented for every tick of the timer.
+/// The counter will wrap around when it overflows.
+///
+/// The size of the counter can vary. On most timers, it goes up to 32 bits, except for TIMER1 and TIMER2 on nrf51 chips.
+/// It can be specified through `Timer`'s second generic parameter, as `u8` for 8 bits, `u16` for 16 bits, etc.
+/// It defaults to the highest number of bits the timer supports.
+///
+/// It has either 4 or 6 Capture/Compare registers, which can be used to capture the current state of the counter
+/// or trigger an event when the counter reaches a certain value.
+pub struct Timer<'d, T, B = <T as Instance>::MaxBitmode, I = NotAwaitable>
+where
+    I: TimerType,
+    B: Bitmode,
+    T: Instance + SupportsBitmode<B>,
+{
+    phantom: PhantomData<(&'d mut T, B, I)>,
 }
 
-impl<'d, T: Instance> Timer<'d, T, Awaitable> {
+impl<'d, T, B> Timer<'d, T, B, Awaitable>
+where
+    B: Bitmode,
+    T: Instance + SupportsBitmode<B>,
+{
     pub fn new_awaitable(
         timer: impl Unborrow<Target = T> + 'd,
         irq: impl Unborrow<Target = T::Interrupt> + 'd,
@@ -114,7 +173,11 @@ impl<'d, T: Instance> Timer<'d, T, Awaitable> {
         Self::new_irqless(timer)
     }
 }
-impl<'d, T: Instance> Timer<'d, T, NotAwaitable> {
+impl<'d, T, B> Timer<'d, T, B, NotAwaitable>
+where
+    B: Bitmode,
+    T: Instance + SupportsBitmode<B>,
+{
     /// Create a `Timer` without an interrupt, meaning `Cc::wait` won't work.
     ///
     /// This can be useful for triggering tasks via PPI
@@ -124,7 +187,12 @@ impl<'d, T: Instance> Timer<'d, T, NotAwaitable> {
     }
 }
 
-impl<'d, T: Instance, I: TimerType> Timer<'d, T, I> {
+impl<'d, T, B, I> Timer<'d, T, B, I>
+where
+    I: TimerType,
+    B: Bitmode,
+    T: Instance + SupportsBitmode<B>,
+{
     /// Create a `Timer` without an interrupt, meaning `Cc::wait` won't work.
     ///
     /// This is used by the public constructors.
@@ -142,9 +210,8 @@ impl<'d, T: Instance, I: TimerType> Timer<'d, T, I> {
         // Set the instance to timer mode.
         regs.mode.write(|w| w.mode().timer());
 
-        // Make the counter's max value as high as possible.
-        // TODO: is there a reason someone would want to set this lower?
-        regs.bitmode.write(|w| w.bitmode()._32bit());
+        // Configure bitmode
+        regs.bitmode.write(|w| B::config(w.bitmode()));
 
         // Initialize the counter at 0.
         this.clear();
@@ -158,7 +225,8 @@ impl<'d, T: Instance, I: TimerType> Timer<'d, T, I> {
             cc.unshort_compare_clear();
             cc.unshort_compare_stop();
             // Initialize the CC registers as 0.
-            cc.write(0);
+            // 0 is a valid value in any bitmode.
+            cc.write(0u32.try_into().unwrap());
         }
 
         this
@@ -231,7 +299,7 @@ impl<'d, T: Instance, I: TimerType> Timer<'d, T, I> {
     ///
     /// # Panics
     /// Panics if `n` >= the number of CC registers this timer has (4 for a normal timer, 6 for an extended timer).
-    pub fn cc(&mut self, n: usize) -> Cc<T, I> {
+    pub fn cc(&mut self, n: usize) -> Cc<T, B, I> {
         if n >= T::CCS {
             panic!(
                 "Cannot get CC register {} of timer with {} CC registers.",
@@ -253,12 +321,21 @@ impl<'d, T: Instance, I: TimerType> Timer<'d, T, I> {
 ///
 /// The timer will fire the register's COMPARE event when its counter reaches the value stored in the register.
 /// When the register's CAPTURE task is triggered, the timer will store the current value of its counter in the register
-pub struct Cc<'a, T: Instance, I: TimerType = NotAwaitable> {
+pub struct Cc<'a, T, B, I = NotAwaitable>
+where
+    I: TimerType,
+    B: Bitmode,
+    T: Instance + SupportsBitmode<B>,
+{
     n: usize,
-    phantom: PhantomData<(&'a mut T, I)>,
+    phantom: PhantomData<(&'a mut T, B, I)>,
 }
 
-impl<'a, T: Instance> Cc<'a, T, Awaitable> {
+impl<'a, T, B> Cc<'a, T, B, Awaitable>
+where
+    B: Bitmode,
+    T: Instance + SupportsBitmode<B>,
+{
     /// Wait until the timer's counter reaches the value stored in this register.
     ///
     /// This requires a mutable reference so that this task's waker cannot be overwritten by a second call to `wait`.
@@ -292,24 +369,30 @@ impl<'a, T: Instance> Cc<'a, T, Awaitable> {
         on_drop.defuse();
     }
 }
-impl<'a, T: Instance> Cc<'a, T, NotAwaitable> {}
 
-impl<'a, T: Instance, I: TimerType> Cc<'a, T, I> {
+impl<'a, T, B, I> Cc<'a, T, B, I>
+where
+    I: TimerType,
+    B: Bitmode,
+    T: Instance + SupportsBitmode<B>,
+{
     /// Get the current value stored in the register.
-    pub fn read(&self) -> u32 {
-        T::regs().cc[self.n].read().bits()
+    pub fn read(&self) -> B {
+        // We initialize all the CC registers to 0, and then only ever write values of the correct bitmode to it.
+        // So, there should be no way an invalid value could be in there.
+        T::regs().cc[self.n].read().bits().try_into().unwrap()
     }
 
     /// Set the value stored in the register.
     ///
     /// `event_compare` will fire when the timer's counter reaches this value.
-    pub fn write(&self, value: u32) {
+    pub fn write(&self, value: B) {
         // SAFETY: there are no invalid values for the CC register.
-        T::regs().cc[self.n].write(|w| unsafe { w.bits(value) })
+        T::regs().cc[self.n].write(|w| unsafe { w.bits(value.into()) })
     }
 
     /// Capture the current value of the timer's counter in this register, and return it.
-    pub fn capture(&self) -> u32 {
+    pub fn capture(&self) -> B {
         T::regs().tasks_capture[self.n].write(|w| unsafe { w.bits(1) });
         self.read()
     }
