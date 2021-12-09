@@ -15,7 +15,7 @@ use embassy::executor::Spawner;
 async fn main(_spawner: Spawner, p: Peripherals) {
     let mut t = Timer::new_awaitable(p.TIMER0, interrupt::take!(TIMER0));
     // default frequency is 1MHz, so this triggers every second
-    t.cc(0).write(1_000_000);
+    t.cc(0).write(1_000_000u32);
     // clear the timer value on cc[0] compare match
     t.cc(0).short_compare_clear();
     t.start();
