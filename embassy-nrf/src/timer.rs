@@ -39,7 +39,12 @@ pub(crate) mod sealed {
 pub trait SupportsBitmode<T: Bitmode>: sealed::SupportsBitmode<T> {}
 
 pub trait Instance:
-    Unborrow<Target = Self> + sealed::Instance + 'static + Send + SupportsBitmode<Self::MaxBitmode>
+    Unborrow<Target = Self>
+    + sealed::Instance
+    + 'static
+    + Send
+    + Sync
+    + SupportsBitmode<Self::MaxBitmode>
 {
     type MaxBitmode: Bitmode;
     type Interrupt: Interrupt;

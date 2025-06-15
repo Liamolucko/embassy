@@ -5,14 +5,17 @@ use core::marker::PhantomData;
 
 use embassy::interrupt::Interrupt;
 use embassy::interrupt::InterruptExt;
-use embassy::traits::uart;
-use embassy::util::Unborrow;
+use embassy::traits::uart::{self, Error};
+use embassy::util::{Unborrow, WakerRegistration};
+use embassy_hal_common::peripheral::{PeripheralMutex, StateStorage};
 use embassy_hal_common::unborrow;
 use futures::FutureExt;
 
 use crate::gpio::sealed::Pin;
 use crate::gpio::{self, OptionalPin as GpioOptionalPin, Pin as GpioPin};
 use crate::pac;
+use crate::ppi::{AnyConfigurableChannel, ConfigurableChannel, Event, Ppi, Task};
+use crate::timer::{Frequency, Instance as TimerInstance, SupportsBitmode, Timer};
 use crate::util::io::{read, write, ByteRead, ByteWrite};
 
 // Re-export SVD variants to allow user to directly set values.
@@ -231,6 +234,160 @@ impl<'d, T: Instance> uart::Write for Uart<'d, T> {
     fn write<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteFuture<'a> {
         // SAFETY: `irq_write`'s safety contract is forwarded to `Uart::new`.
         unsafe { write(self, buf) }.map(|_| Ok(()))
+    }
+}
+
+/// Interface to an UARTE peripheral that uses an additional timer and two PPI channels,
+/// allowing it to implement the ReadUntilIdle trait.
+pub struct UartWithIdle<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> {
+    uart: Uart<'d, U>,
+    timer: Timer<'d, T, u16>,
+    ppi_ch1: Ppi<'d, AnyConfigurableChannel>,
+    _ppi_ch2: Ppi<'d, AnyConfigurableChannel>,
+}
+
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> UartWithIdle<'d, U, T> {
+    /// Creates the interface to a UARTE instance.
+    /// Sets the baud rate, parity and assigns the pins to the UARTE peripheral.
+    ///
+    /// # Safety
+    ///
+    /// The returned API is safe unless you use `mem::forget` (or similar safe mechanisms)
+    /// on stack allocated buffers which which have been passed to [`send()`](Uarte::send)
+    /// or [`receive`](Uarte::receive).
+    #[allow(unused_unsafe)]
+    pub unsafe fn new(
+        uarte: impl Unborrow<Target = U> + 'd,
+        timer: impl Unborrow<Target = T> + 'd,
+        ppi_ch1: impl Unborrow<Target = impl ConfigurableChannel> + 'd,
+        ppi_ch2: impl Unborrow<Target = impl ConfigurableChannel> + 'd,
+        irq: impl Unborrow<Target = U::Interrupt> + 'd,
+        rxd: impl Unborrow<Target = impl GpioPin> + 'd,
+        txd: impl Unborrow<Target = impl GpioPin> + 'd,
+        cts: impl Unborrow<Target = impl GpioOptionalPin> + 'd,
+        rts: impl Unborrow<Target = impl GpioOptionalPin> + 'd,
+        config: Config,
+    ) -> Self {
+        let baudrate = config.baudrate;
+        let uart = Uart::new(uarte, irq, rxd, txd, cts, rts, config);
+        let mut timer: Timer<T, u16> = Timer::new_irqless(timer);
+
+        unborrow!(ppi_ch1, ppi_ch2);
+
+        let r = U::regs();
+
+        // BAUDRATE register values are `baudrate * 2^32 / 16000000`
+        // source: https://devzone.nordicsemi.com/f/nordic-q-a/391/uart-baudrate-register-values
+        //
+        // We want to stop RX if line is idle for 2 bytes worth of time
+        // That is 20 bits (each byte is 1 start bit + 8 data bits + 1 stop bit)
+        // This gives us the amount of 16M ticks for 20 bits.
+        let timeout = (0x8000_0000 / (baudrate as u32 / 40)) as u16;
+
+        timer.set_frequency(Frequency::F16MHz);
+        timer.cc(0).write(timeout);
+        timer.cc(0).short_compare_clear();
+        timer.cc(0).short_compare_stop();
+
+        let mut ppi_ch1 = Ppi::new(ppi_ch1.degrade_configurable());
+        ppi_ch1.set_event(Event::from_reg(&r.events_rxdrdy));
+        ppi_ch1.set_task(timer.task_clear());
+        ppi_ch1.enable();
+
+        let mut ppi_ch2 = Ppi::new(ppi_ch2.degrade_configurable());
+        ppi_ch2.set_event(timer.cc(0).event_compare());
+        ppi_ch2.set_task(Task::from_reg(&r.tasks_stoprx));
+        ppi_ch2.enable();
+
+        Self {
+            uart,
+            timer,
+            ppi_ch1,
+            _ppi_ch2: ppi_ch2,
+        }
+    }
+}
+
+impl<'d, U, T> uart::ReadUntilIdle for UartWithIdle<'d, U, T>
+where
+    U: Instance,
+    T: TimerInstance + SupportsBitmode<u16>,
+{
+    #[rustfmt::skip]
+    type ReadUntilIdleFuture<'a> where Self: 'a = impl Future<Output = Result<usize, Error>> + 'a;
+    fn read_until_idle<'a>(&'a mut self, rx_buffer: &'a mut [u8]) -> Self::ReadUntilIdleFuture<'a> {
+        if rx_buffer.len() == 0 {
+            return; // Nothing to fill
+        }
+
+        // SAFETY: This future will only live as long as the reference to the original `irq`;
+        // we only need ownership to pass it to `PeripheralMutex`.
+        let irq = unsafe { (&mut self.uart.irq).unborrow() };
+
+        let mut storage = StateStorage::new();
+
+        // SAFETY: `UartWithIdle::new`'s safety contract makes sure the destructor will be run.
+        let mut mutex = unsafe {
+            PeripheralMutex::new_unchecked(irq, &mut storage, || ReadState {
+                reader: &*self,
+                buf_iter: rx_buffer.iter_mut(),
+                waker: WakerRegistration::new(),
+            })
+        };
+
+        let r = U::regs();
+
+        r.intenset.write(|w| w.rxdrdy().set());
+        r.tasks_startrx.write(|w| unsafe { w.bits(1) });
+
+        let on_drop = OnDrop::new(|| {
+            // Disable the interrupt first, so we don't waste its time with events it'll just ignore.
+            reader.disable_irq();
+            reader.stop();
+        });
+
+        poll_fn(|cx| {
+            mutex.with(|state| {
+                state.waker.register(cx.waker());
+
+                if state.buf_iter.len() == 0 {
+                    // We're done.
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+        })
+        .await;
+
+        // Trigger the teardown
+        drop(on_drop);
+    }
+}
+
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> uart::Read
+    for UartWithIdle<'d, U, T>
+{
+    #[rustfmt::skip]
+    type ReadFuture<'a> where Self: 'a = impl Future<Output = Result<(), Error>> + 'a;
+    fn read<'a>(&'a mut self, rx_buffer: &'a mut [u8]) -> Self::ReadFuture<'a> {
+        async move {
+            self.ppi_ch1.disable();
+            let result = self.uart.read(rx_buffer).await;
+            self.ppi_ch1.enable();
+            result
+        }
+    }
+}
+
+impl<'d, U: Instance, T: TimerInstance + SupportsBitmode<u16>> uart::Write
+    for UartWithIdle<'d, U, T>
+{
+    #[rustfmt::skip]
+    type WriteFuture<'a> where Self: 'a = impl Future<Output = Result<(), Error>> + 'a;
+
+    fn write<'a>(&'a mut self, tx_buffer: &'a [u8]) -> Self::WriteFuture<'a> {
+        self.uart.write(tx_buffer)
     }
 }
 

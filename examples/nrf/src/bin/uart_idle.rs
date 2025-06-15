@@ -22,7 +22,7 @@ async fn main(_spawner: Spawner, p: Peripherals) {
 
     let irq = interrupt::take!(UARTE0_UART0);
     let mut uart = unsafe {
-        uart::UarteWithIdle::new(
+        uart::UartWithIdle::new(
             p.UARTE0, p.TIMER0, p.PPI_CH0, p.PPI_CH1, irq, p.P0_08, p.P0_06, NoPin, NoPin, config,
         )
     };
